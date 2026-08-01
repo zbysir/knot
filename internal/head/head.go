@@ -69,6 +69,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/login", s.handleLogin)
 	mux.HandleFunc("GET /api/state", s.auth(s.handleState))
 	mux.HandleFunc("POST /api/token", s.auth(s.handleNewToken))
+	mux.HandleFunc("POST /api/token/delete", s.auth(s.handleDeleteToken))
 	mux.HandleFunc("POST /api/routes", s.auth(s.handleSetRoutes))
 	mux.HandleFunc("POST /api/node/update", s.auth(s.handleUpdateNode))
 	mux.HandleFunc("POST /api/node/delete", s.auth(s.handleDeleteNode))
@@ -493,6 +494,21 @@ func (s *Server) handleNewToken(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	writeJSON(w, t)
+}
+
+// handleDeleteToken revokes an unused token. A token is a credential to join
+// the mesh, so being able to see one is not much use without being able to
+// take it back.
+func (s *Server) handleDeleteToken(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token string `json:"token"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	s.store.Write(func(st *model.State) error {
+		dropToken(st, req.Token)
+		return nil
+	})
+	writeJSON(w, map[string]any{"ok": true})
 }
 
 func (s *Server) handleSetRoutes(w http.ResponseWriter, r *http.Request) {

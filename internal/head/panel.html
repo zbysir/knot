@@ -65,7 +65,7 @@ td.dirty input{border-color:#3b82f6}
   </div>
   <div id="joinBox" style="display:none;margin-bottom:16px;padding:14px;background:#0b0d11;border:1px solid var(--line);border-radius:8px">
     <div class="row" style="margin-bottom:10px">
-      <div><label>节点名</label><input id="jName" placeholder="留空 = 用机器的 hostname" style="width:220px"></div>
+      <div><label>节点名</label><input id="jName" placeholder="留空 = 用机器的 hostname" style="width:220px" oninput="renderJoinCmd()"></div>
       <div><label>角色</label>
         <select id="jRole" onchange="renderJoinCmd()" style="width:200px">
           <option value="leaf">叶子（不开端口）</option>
@@ -73,8 +73,16 @@ td.dirty input{border-color:#3b82f6}
         </select>
       </div>
       <div id="jEpWrap" style="display:none"><label>对外端点</label><input id="jEp" placeholder="1.2.3.4:443" style="width:170px" oninput="renderJoinCmd()"></div>
+      <div><label>部署方式</label>
+        <select id="jKind" onchange="renderJoinCmd()" style="width:150px">
+          <option value="run">docker run</option>
+          <option value="compose">docker compose</option>
+          <option value="swarm">docker swarm</option>
+        </select>
+      </div>
       <button class="ghost" onclick="closeJoin()">收起</button>
     </div>
+    <div class="hint" id="jHint" style="margin:0 0 8px"></div>
     <div class="hint" style="margin:0 0 6px">在新机器上执行：</div>
     <div class="mono" id="jCmd" style="background:#000;padding:10px;border-radius:6px;font-size:12px;white-space:pre-wrap;word-break:break-all"></div>
     <div class="row" style="margin-top:10px">
@@ -118,15 +126,10 @@ td.dirty input{border-color:#3b82f6}
 </section>
 
 <section>
-  <h2>接入令牌</h2>
-  <div class="row">
-    <div><label>有效期（小时）</label><input id="tokHours" type="number" value="24" style="width:110px"></div>
-    <div><label><input id="tokReuse" type="checkbox"> 可重复使用</label></div>
-    <button onclick="newToken()">生成</button>
-  </div>
-  <table style="margin-top:12px"><thead><tr><th>令牌</th><th>类型</th><th>过期</th><th>已用</th></tr></thead><tbody id="tokens"></tbody></table>
-  <div class="hint">节点侧一条命令即可接入，把 <code>&lt;TOKEN&gt;</code> 换成上面生成的：</div>
-  <div class="hint mono" id="joinCmd"></div>
+  <h2>未使用的令牌</h2>
+  <div id="tokens"></div>
+  <div class="hint">令牌由上面的「+ 接入新节点」生成。这里只是让你看见还有哪些没作废的凭证 ——
+    <b>拿到令牌的人就能往网里加节点</b>，不用了就撤销。</div>
 </section>
 
 <section>
@@ -268,12 +271,15 @@ function viaOf(fromId, toId) {
 function pathLabel(p, relays) {
   if (!p) return '?';
   if (p.kind === 'direct') return '直连';
+  if (p.kind === 'own-session') return '本机中继会话';
   const r = nodeById(p.relay_id);
   return r ? '经 ' + esc(r.name) : '经 已删除的中继';
 }
 
-// Mirrors defaultPaths() in model.go. Kept in step by hand; if the two ever
-// disagree the panel is the one that is wrong.
+// Mirrors defaultPaths() in model.go, PLUS the case that lives in buildPlan():
+// a relay reaches its own leaves straight off its registry, without bouncing
+// through anybody. Leaving that out made the panel report "不通" for
+// relay -> leaf, which is simply false -- those sessions are already open.
 function defaultPaths(from, to) {
   const out = [];
   if (to.is_relay && to.endpoint) out.push({kind:'direct'});
@@ -281,8 +287,14 @@ function defaultPaths(from, to) {
     if (r.id === to.id || r.id === from.id) continue;
     out.push({kind:'relay', relay_id:r.id});
   }
+  // from is a relay and to is a leaf: the leaf is homed here, so this node
+  // pushes down that session itself.
+  if (!out.length && from.is_relay && from.endpoint && !(to.is_relay && to.endpoint)) {
+    out.push({kind:'own-session'});
+  }
   return out;
 }
+
 function effective(from, to) {
   const cfg = viaOf(from.id, to.id);
   const r = S.routes.find(r => r.from === from.id && r.to === to.id);
@@ -386,20 +398,148 @@ async function saveRoutes() {
   await load();
 }
 
+// --- 接入新节点 -----------------------------------------------------------
+// One button that mints a token and hands back the exact command to paste.
+// The only difference between a leaf and a relay is KNOT_ENDPOINT, so the
+// role selector just adds or removes that one line -- worth showing rather
+// than explaining.
+let joinToken = null;
+
+async function startJoin() {
+  const box = document.getElementById('joinBox');
+  if (box.style.display !== 'none') { renderJoinCmd(); return; }
+  try {
+    const r = await api('/api/token', {hours: 24, reusable: false});
+    joinToken = r.token;
+  } catch (e) {
+    document.getElementById('nodeErr').textContent = e.message;
+    return;
+  }
+  box.style.display = '';
+  document.getElementById('jNote').textContent = '一次性令牌，24 小时内有效，接入后自动作废。';
+  renderJoinCmd();
+  renderTokens();
+}
+function closeJoin() { document.getElementById('joinBox').style.display = 'none'; }
+
+function joinCmdText() {
+  const relay = document.getElementById('jRole').value === 'relay';
+  const kind  = document.getElementById('jKind').value;
+  const name  = document.getElementById('jName').value.trim() || '$(hostname)';
+  const ep    = document.getElementById('jEp').value.trim() || '<公网IP>:443';
+  const tok   = joinToken || '<TOKEN>';
+  const head  = location.origin;
+
+  if (kind === 'run') {
+    const l = [
+      'docker run -d --name knot-node --restart=always \\',
+      '  --network host --cap-add NET_ADMIN --device /dev/net/tun \\',
+      '  -v /etc/hosts:/etc/hosts -v knot-node:/var/lib/knot \\',
+      `  -e KNOT_HEAD=${head} \\`,
+      `  -e KNOT_TOKEN=${tok} \\`,
+      `  -e KNOT_NAME=${name} \\`,
+    ];
+    if (relay) l.push(`  -e KNOT_ENDPOINT=${ep} \\`);
+    l.push('  zbysir/knot:latest node');
+    return l.join('\n');
+  }
+
+  if (kind === 'compose') {
+    return [
+      '# docker-compose.yml',
+      'services:',
+      '  knot:',
+      '    image: zbysir/knot:latest',
+      '    command: node',
+      '    restart: always',
+      '    network_mode: host          # TUN 必须建在宿主机的 netns 里',
+      '    cap_add: [NET_ADMIN]        # ioctl(TUNSETIFF) 需要',
+      '    devices:',
+      '      - /dev/net/tun',
+      '    environment:',
+      `      KNOT_HEAD: ${head}`,
+      `      KNOT_TOKEN: "${tok}"`,
+      `      KNOT_NAME: "${name}"`,
+    ].concat(relay ? [`      KNOT_ENDPOINT: "${ep}"`] : []).concat([
+      '    volumes:',
+      '      - /etc/hosts:/etc/hosts',
+      '      - knot-node:/var/lib/knot',
+      'volumes:',
+      '  knot-node:',
+      '',
+      '# docker compose up -d',
+    ]).join('\n');
+  }
+
+  // swarm：两处和 compose 不同，而且都是静默失败，所以在注释里点名
+  return [
+    '# stack.yml   —— docker stack deploy -c stack.yml knot',
+    'version: "3.8"',
+    'networks:',
+    '  hostnet:',
+    '    name: host                    # swarm 忽略 network_mode: host，',
+    '    external: true                # 只能挂这个预置网络',
+    'services:',
+    '  node:',
+    '    image: zbysir/knot:latest',
+    '    command: node',
+    '    cap_add: [NET_ADMIN]',
+    '    volumes:',
+    '      - /dev/net/tun:/dev/net/tun # 不能用 devices:，swarm 会静默丢掉，',
+    '                                  # 容器里报 "open: No such file or directory"',
+    '      - /etc/hosts:/etc/hosts',
+    '      - knot-node:/var/lib/knot',
+    '    networks: [hostnet]',
+    '    environment:',
+    `      KNOT_HEAD: ${head}`,
+    `      KNOT_TOKEN: "${tok}"`,
+  ].concat(
+    relay
+      ? [`      KNOT_NAME: "${name}"`, `      KNOT_ENDPOINT: "${ep}"`,
+         '    deploy:',
+         '      replicas: 1           # 中继各有各的 endpoint，不能用 global',
+         '      placement:',
+         '        constraints: [node.hostname == 改成那台机器]']
+      : ['      KNOT_NAME: "{{.Node.Hostname}}"   # swarm 按 task 展开',
+         '    deploy:',
+         '      mode: global          # 每台机器一个叶子']
+  ).concat([
+    '      restart_policy: {condition: any}',
+    'volumes:',
+    '  knot-node:',
+  ]).join('\n');
+}
+
+function renderJoinCmd() {
+  const relay = document.getElementById('jRole').value === 'relay';
+  document.getElementById('jEpWrap').style.display = relay ? '' : 'none';
+  document.getElementById('jHint').innerHTML = relay
+    ? '中继要能被别的节点拨入，所以<b>必须有一个对外可达的 host:port</b>，' +
+      '并且那台机器的 443 要腾给 Reality（原有站点改听本地端口，在上面的表格里设「回落」）。'
+    : '叶子<b>不开任何入站端口</b>，只主动拨出去。绝大多数机器都该是叶子。';
+  document.getElementById('jCmd').textContent = joinCmdText();
+}
+function copyJoin() {
+  navigator.clipboard.writeText(joinCmdText());
+  document.getElementById('jNote').textContent = '已复制。';
+}
+
 function renderTokens() {
-  document.getElementById('tokens').innerHTML = (S.tokens || []).map(t => `
+  const rows = (S.tokens || []).map((t, i) => `
     <tr><td><code>${t.token}</code></td>
         <td>${t.reusable ? '可重复' : '一次性'}</td>
-        <td>${new Date(t.expires).toLocaleString()}</td>
-        <td>${t.used}</td></tr>`).join('') ||
-    '<tr><td colspan="4" class="sub">还没有令牌</td></tr>';
-  document.getElementById('joinCmd').innerHTML = esc(
-`docker run -d --name knot --restart=always \\
-  --cap-add NET_ADMIN --device /dev/net/tun \\
-  --network host -v knot:/var/lib/knot \\
-  -e KNOT_HEAD=${location.origin} -e KNOT_TOKEN=<TOKEN> \\
-  -e KNOT_NAME=$(hostname) \\
-  zbysir/knot:latest node`).replace(/\n/g, '<br>');
+        <td class="sub">${new Date(t.expires).toLocaleString()}</td>
+        <td class="sub">已用 ${t.used}</td>
+        <td><button class="ghost" onclick="revokeToken('${t.token}')">撤销</button></td></tr>`).join('');
+  document.getElementById('tokens').innerHTML = rows
+    ? `<table><thead><tr><th>令牌</th><th>类型</th><th>过期</th><th></th><th></th></tr></thead><tbody>${rows}</tbody></table>`
+    : '<div class="sub">没有未使用的令牌。</div>';
+}
+
+async function revokeToken(tok) {
+  if (!confirm('撤销这个令牌？还没接入的机器将无法再用它加入。')) return;
+  await api('/api/token/delete', {token: tok});
+  await load();
 }
 
 async function newToken() {
