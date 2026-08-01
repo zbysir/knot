@@ -8,7 +8,7 @@
 services:
 
   head:
-    image: zbysir/knot:latest
+    image: bysir/knot:latest
     command: head
     profiles: [head]
     restart: always
@@ -22,7 +22,7 @@ services:
       - head-data:/var/lib/knot
 
   node:
-    image: zbysir/knot:latest
+    image: bysir/knot:latest
     command: node
     profiles: [node]
     restart: always

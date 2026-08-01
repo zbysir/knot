@@ -3,7 +3,7 @@
 [English](./README.md)
 
 [![ci](https://github.com/zbysir/knot/actions/workflows/ci.yml/badge.svg)](https://github.com/zbysir/knot/actions/workflows/ci.yml)
-[![docker](https://img.shields.io/docker/v/zbysir/knot?logo=docker&label=docker%20hub)](https://hub.docker.com/r/zbysir/knot)
+[![docker](https://img.shields.io/docker/v/bysir/knot?logo=docker&label=docker%20hub)](https://hub.docker.com/r/bysir/knot)
 
 一个数据面走 **VLESS + Reality** 的小型组网工具。每个节点分一个固定内网 IP，
 接入只需要一条 `docker run` 加一个 token。
@@ -168,7 +168,7 @@ docker run -d --name knot-head --restart=always \
   -p 8080:8080 \
   -e KNOT_PASSWORD=<面板密码> \
   -v knot-head:/var/lib/knot \
-  zbysir/knot:latest head
+  bysir/knot:latest head
 ```
 
 打开 `http://<head>:8080` 登录。
@@ -195,7 +195,7 @@ docker run -d --name knot-node --restart=always \
   -e KNOT_HEAD=https://head.example.com \
   -e KNOT_TOKEN=<令牌> \
   -e KNOT_NAME=$(hostname) \
-  zbysir/knot:latest node
+  bysir/knot:latest node
 ```
 
 `KNOT_TOKEN` 只有首次需要，之后节点用自己的 key 认证。
@@ -233,7 +233,7 @@ docker run -d --name knot-node --restart=always \
   -v /etc/hosts:/etc/hosts -v knot-node:/var/lib/knot \
   -e KNOT_HEAD=http://<公网地址>:8080 \
   -e KNOT_TOKEN=<令牌> \
-  zbysir/knot:latest node
+  bysir/knot:latest node
 
 # 2. 起来并拿到 mesh 地址后，改指向 head 的 mesh 地址重建。不用再带 KNOT_TOKEN
 docker rm -f knot-node
@@ -241,7 +241,7 @@ docker run -d --name knot-node --restart=always \
   --network host --cap-add NET_ADMIN --device /dev/net/tun \
   -v /etc/hosts:/etc/hosts -v knot-node:/var/lib/knot \
   -e KNOT_HEAD=http://10.88.0.1:8080 \
-  zbysir/knot:latest node
+  bysir/knot:latest node
 ```
 
 `KNOT_HEAD` 会覆盖接入时记下的地址，所以第 2 步只是改个环境变量。

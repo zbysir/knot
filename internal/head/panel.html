@@ -440,7 +440,7 @@ function joinCmdText() {
       `  -e KNOT_NAME=${name} \\`,
     ];
     if (relay) l.push(`  -e KNOT_ENDPOINT=${ep} \\`);
-    l.push('  zbysir/knot:latest node');
+    l.push('  bysir/knot:latest node');
     return l.join('\n');
   }
 
@@ -449,7 +449,7 @@ function joinCmdText() {
       '# docker-compose.yml',
       'services:',
       '  knot:',
-      '    image: zbysir/knot:latest',
+      '    image: bysir/knot:latest',
       '    command: node',
       '    restart: always',
       '    network_mode: host          # TUN 必须建在宿主机的 netns 里',
@@ -481,7 +481,7 @@ function joinCmdText() {
     '    external: true                # 只能挂这个预置网络',
     'services:',
     '  node:',
-    '    image: zbysir/knot:latest',
+    '    image: bysir/knot:latest',
     '    command: node',
     '    cap_add: [NET_ADMIN]',
     '    volumes:',

@@ -8,7 +8,7 @@ on:
     branches: [main]
 
 env:
-  IMAGE: zbysir/knot
+  IMAGE: bysir/knot
 
 jobs:
   test:

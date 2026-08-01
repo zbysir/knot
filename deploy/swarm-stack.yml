@@ -16,7 +16,7 @@ networks:
 services:
 
   head:
-    image: zbysir/knot:latest
+    image: bysir/knot:latest
     command: head
     ports:
       - target: 8080
@@ -36,7 +36,7 @@ services:
         condition: any
 
   node:
-    image: zbysir/knot:latest
+    image: bysir/knot:latest
     command: node
     environment:
       KNOT_HEAD: "http://head.example.com:8080"

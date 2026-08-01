@@ -3,7 +3,7 @@
 [中文](./README.zh-CN.md)
 
 [![ci](https://github.com/zbysir/knot/actions/workflows/ci.yml/badge.svg)](https://github.com/zbysir/knot/actions/workflows/ci.yml)
-[![docker](https://img.shields.io/docker/v/zbysir/knot?logo=docker&label=docker%20hub)](https://hub.docker.com/r/zbysir/knot)
+[![docker](https://img.shields.io/docker/v/bysir/knot?logo=docker&label=docker%20hub)](https://hub.docker.com/r/bysir/knot)
 
 A small mesh network whose data plane is **VLESS + Reality**. Every node gets a
 fixed private IP; joining is one `docker run` and a token.
@@ -188,7 +188,7 @@ docker run -d --name knot-head --restart=always \
   -p 8080:8080 \
   -e KNOT_PASSWORD=<panel password> \
   -v knot-head:/var/lib/knot \
-  zbysir/knot:latest head
+  bysir/knot:latest head
 ```
 
 Open `http://<head>:8080` and log in.
@@ -218,7 +218,7 @@ docker run -d --name knot-node --restart=always \
   -e KNOT_HEAD=https://head.example.com \
   -e KNOT_TOKEN=<TOKEN> \
   -e KNOT_NAME=$(hostname) \
-  zbysir/knot:latest node
+  bysir/knot:latest node
 ```
 
 `KNOT_TOKEN` is only needed on the first run; after that the node authenticates
@@ -261,7 +261,7 @@ docker run -d --name knot-node --restart=always \
   -v /etc/hosts:/etc/hosts -v knot-node:/var/lib/knot \
   -e KNOT_HEAD=http://<public-addr>:8080 \
   -e KNOT_TOKEN=<TOKEN> \
-  zbysir/knot:latest node
+  bysir/knot:latest node
 
 # 2. Once it is up and has a mesh address, re-create it pointing at the head's
 #    MESH address. KNOT_TOKEN is no longer needed.
@@ -270,7 +270,7 @@ docker run -d --name knot-node --restart=always \
   --network host --cap-add NET_ADMIN --device /dev/net/tun \
   -v /etc/hosts:/etc/hosts -v knot-node:/var/lib/knot \
   -e KNOT_HEAD=http://10.88.0.1:8080 \
-  zbysir/knot:latest node
+  bysir/knot:latest node
 ```
 
 `KNOT_HEAD` overrides the address recorded at join time, so step 2 is just an
