@@ -81,13 +81,22 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Pushes docs/dockerhub.md as the repo overview -- NOT README.md, whose
+      # relative links (./README.zh-CN.md, ./DESIGN-relay.md) are all dead once
+      # rendered on Docker Hub.
+      #
+      # ⚠️ A plain Read & Write PAT gets `403 Forbidden` on this: Docker Hub
+      # does not let personal access tokens edit repository metadata. Either
+      # use a token with a higher scope, or paste docs/dockerhub.md into the
+      # web UI once by hand. Left in (non-fatal) so it starts working the day
+      # the credential is upgraded.
       - name: Update Docker Hub description
         if: steps.creds.outputs.ok == 'true' && github.ref == 'refs/heads/main'
         uses: peter-evans/dockerhub-description@v4
-        continue-on-error: true   # a missing/limited token should not fail the build
+        continue-on-error: true
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: ${{ env.IMAGE }}
           short-description: "Mesh networking with a VLESS+Reality data plane"
-          readme-filepath: ./README.md
+          readme-filepath: ./docs/dockerhub.md
