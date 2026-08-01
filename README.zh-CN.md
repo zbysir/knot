@@ -82,6 +82,42 @@ sing-box 以**子进程**方式跑在同一个容器里，不做 library 嵌入 
 在版本间会变，而 CLI 和配置 schema 是稳定接口。升级只需要改 Dockerfile 里
 一个版本号。
 
+### 在 sing-box 之上做了什么
+
+sing-box 是引擎，knot 是把 N 台机器变成一张受管网络的那部分。
+**不是 fork** —— 容器里装的是上游原版二进制，锁了版本，没打任何补丁。
+
+**1. 配置编译器**（`internal/sb`，约 300 行）。sing-box 要的是每台机器一份手写
+JSON，而且这些文件互相耦合：
+
+- 中继的 `users` 必须列**全部**节点的 UUID —— 漏一个，那个节点握手失败，
+  报的却是 `processed invalid connection`，指向完全错误的方向
+- 每个叶子要为每个可能拨的中继生成 outbound 加路由规则
+- 多个中继要包进 `urltest` 组
+- 路由规则**不能**加 `inbound` 过滤，否则中继转发的流量落到 `final: direct`，
+  中继会去拨自己
+- 走中继的 UDP 必须显式 block，否则每个数据报都变成一条
+  `socks5: request rejected, code=7`
+
+这些每一条都是实际踩过的坑，现在全部编码在生成器里。加一台机器不用碰任何配置。
+
+**2. 身份与密钥的生命周期**（`internal/head`）。Reality 密钥对、shortID、UUID、
+node key 集中生成，按需下发。包括一个不读 sing-box 源码根本发现不了的细节：
+**x25519 私钥必须 clamp**。sing-box 是拿存储的字节直接用的，没 clamp 的私钥
+推导出的公钥和你分发出去的那个对不上。
+
+**3. 双向中继**（`internal/relay` + `node/relayd`，约 700 行）。
+**这是 sing-box 完全没有的部分。** VLESS 单向，中继拨不回叶子，
+`叶子A → 中继 → 叶子B` 根本走不通。knot 在 sing-box 已建好的 Reality 隧道里
+叠一层 yamux，让叶子复用自己拨出去的连接做双向通信。这是协议，不是配置技巧 ——
+也正是叶子能保持零开放端口的原因。
+
+**4. agent 生命周期**（`internal/node`）。配置用 ETag 轮询，替换前先过
+`sing-box check`，所以坏配置永远不会让节点失去数据面。没变化就不重启 sing-box
+（重启会断掉所有活跃连接）。对端名字维护在 `/etc/hosts` 里。
+
+外加 Web 面板：节点表、路由矩阵、令牌。
+
 ## 叶子永远不开端口
 
 sing-box 的 VLESS/Reality 是严格单向的：只能客户端拨服务端。照搬的话中继

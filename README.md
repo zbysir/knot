@@ -91,6 +91,48 @@ sing-box runs as a **child process** in the same container rather than being
 imported as a library. Its Go API changes between releases; the CLI and config
 schema are the stable interface. Upgrading is a version bump in the Dockerfile.
 
+### What knot adds on top of sing-box
+
+sing-box is the engine. knot is what turns N machines into one managed network.
+**It is not a fork** — the container ships the upstream binary, pinned by
+version, with no patches.
+
+**1. A config compiler** (`internal/sb`, ~300 lines). sing-box wants one
+hand-written JSON file per machine, and those files are coupled to each other:
+
+- a relay's `users` list must contain **every** node's UUID — miss one and that
+  node's handshake fails with `processed invalid connection`, which points
+  nowhere near the cause
+- every leaf needs an outbound plus route rules for each relay it may dial
+- multiple relays have to be wrapped in a `urltest` group
+- route rules must **not** filter on `inbound`, or relay-forwarded traffic falls
+  through to `final: direct` and the relay tries to dial the peer on itself
+- UDP toward a relayed peer has to be explicitly blocked, or every datagram
+  becomes a `socks5: request rejected, code=7` in the log
+
+Each of those is a bug we hit. They are all encoded in the generator now, so
+adding a machine touches no config at all.
+
+**2. Identity and key lifecycle** (`internal/head`). Reality keypairs, shortIDs,
+UUIDs and node keys are generated centrally and pushed to whoever needs them.
+Including one detail you only find by reading sing-box's source: **the x25519
+private key must be clamped**. sing-box uses the stored bytes as-is, so an
+unclamped key derives a public key that does not match the one you handed out.
+
+**3. Bidirectional relaying** (`internal/relay` + `node/relayd`, ~700 lines).
+**This is the part sing-box does not have at all.** VLESS is one-directional, so
+a relay cannot dial back to a leaf and `leaf A → relay → leaf B` is impossible.
+knot layers yamux inside the Reality tunnel sing-box already built, letting a
+leaf reuse its own outbound connection in both directions. That is a protocol,
+not a config trick — and it is what lets a leaf keep zero open ports.
+
+**4. Agent lifecycle** (`internal/node`). Config is polled with an ETag and
+validated by `sing-box check` before it is swapped in, so a bad config can never
+take a node's data plane away. Unchanged config does not restart sing-box, which
+would drop every live connection. Peer names are kept in `/etc/hosts`.
+
+Plus the web panel: node table, routing matrix, tokens.
+
 ## Leaves never open a port
 
 sing-box's VLESS/Reality is strictly one-directional: clients dial servers, and
