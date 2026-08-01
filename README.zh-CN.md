@@ -180,6 +180,10 @@ docker run -d --name knot-head --restart=always \
 > 或者用 `KNOT_TLS_CERT` / `KNOT_TLS_KEY` 让它自己终结。
 > 能连上它的人可以发接入令牌、读到所有节点的 Reality 私钥。
 
+也可以用 [deploy/docker-compose.yml](./deploy/docker-compose.yml) /
+[deploy/swarm-stack.yml](./deploy/swarm-stack.yml) —— 见
+[deploy/README.md](./deploy/README.md)，里面讲了 swarm 上两个会**静默失败**的替换。
+
 ### 2. 接节点
 
 面板上生成令牌，然后在每台机器上：

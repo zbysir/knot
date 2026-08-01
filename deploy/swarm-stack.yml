@@ -1,0 +1,69 @@
+# Docker Swarm. Two things differ from plain compose, and both fail in ways
+# that do not point at the cause -- see deploy/README.md.
+#
+#   KNOT_PASSWORD=... docker stack deploy -c swarm-stack.yml knot
+#
+# The node runs in global mode: one per swarm node, named after the host.
+version: "3.8"
+
+networks:
+  # Swarm ignores `network_mode: host`. Attaching to the predefined `host`
+  # network as an external network is the way that actually works.
+  hostnet:
+    name: host
+    external: true
+
+services:
+
+  head:
+    image: zbysir/knot:latest
+    command: head
+    ports:
+      - target: 8080
+        published: 8080
+        mode: host
+    environment:
+      # Note this lands in the swarm raft log and in `docker service inspect`.
+      KNOT_PASSWORD: ${KNOT_PASSWORD:?set KNOT_PASSWORD}
+    volumes:
+      - head-data:/var/lib/knot
+    deploy:
+      replicas: 1
+      placement:
+        # State is a local volume, so the head has to stay on one machine.
+        constraints: [node.role == manager]
+      restart_policy:
+        condition: any
+
+  node:
+    image: zbysir/knot:latest
+    command: node
+    environment:
+      KNOT_HEAD: "http://head.example.com:8080"
+      # Swarm expands this per task, so every host gets its own node name.
+      KNOT_NAME: "{{.Node.Hostname}}"
+      # First run only. Remove it afterwards -- nodes authenticate with their
+      # own key from then on.
+      KNOT_TOKEN: ""
+      # Set per relay; leave empty and the node stays a leaf. A single global
+      # service cannot give different hosts different endpoints, so relays are
+      # usually a separate service or a plain `docker run`.
+      KNOT_ENDPOINT: ""
+    cap_add:
+      - NET_ADMIN
+    # NOT `devices:` -- swarm drops that key SILENTLY, and the container then
+    # fails with "open: No such file or directory" from inside sing-box, which
+    # looks like a missing binary. Bind-mounting the device node works.
+    volumes:
+      - /dev/net/tun:/dev/net/tun
+      - /etc/hosts:/etc/hosts
+      - node-data:/var/lib/knot
+    networks: [hostnet]
+    deploy:
+      mode: global
+      restart_policy:
+        condition: any
+
+volumes:
+  head-data:
+  node-data:

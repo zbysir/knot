@@ -1,0 +1,52 @@
+# Plain docker compose (NOT swarm -- see swarm-stack.yml for that).
+#
+#   KNOT_PASSWORD=... docker compose up -d head
+#   KNOT_TOKEN=...    docker compose up -d node
+#
+# head and node are separate profiles because they are usually on different
+# machines. Only one machine in a deployment runs the head.
+services:
+
+  head:
+    image: zbysir/knot:latest
+    command: head
+    profiles: [head]
+    restart: always
+    ports:
+      - "8080:8080"
+    environment:
+      # Set the password here, not with `knot passwd` -- that subcommand writes
+      # the state file directly and a running server would overwrite it.
+      KNOT_PASSWORD: ${KNOT_PASSWORD:?set KNOT_PASSWORD}
+    volumes:
+      - head-data:/var/lib/knot
+
+  node:
+    image: zbysir/knot:latest
+    command: node
+    profiles: [node]
+    restart: always
+    # Host networking is required, not a shortcut: the TUN interface has to
+    # exist in the host's network namespace or nothing on the host can route
+    # into it. In its own namespace the interface is created fine and is
+    # completely useless.
+    network_mode: host
+    cap_add:
+      - NET_ADMIN          # for ioctl(TUNSETIFF)
+    devices:
+      - /dev/net/tun       # the device node itself
+    environment:
+      KNOT_HEAD: ${KNOT_HEAD:?set KNOT_HEAD, e.g. https://head.example.com}
+      KNOT_TOKEN: ${KNOT_TOKEN:-}          # first run only
+      KNOT_NAME: ${KNOT_NAME:-}            # defaults to the container hostname
+      KNOT_ENDPOINT: ${KNOT_ENDPOINT:-}    # set this to make the node a relay
+    volumes:
+      - node-data:/var/lib/knot
+      # Peer names are maintained in a marked block here. Written in place
+      # rather than via rename -- a rename would create a new inode and the
+      # bind mount would keep pointing at the old one.
+      - /etc/hosts:/etc/hosts
+
+volumes:
+  head-data:
+  node-data:

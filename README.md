@@ -202,6 +202,11 @@ Open `http://<head>:8080` and log in.
 > `KNOT_TLS_CERT` / `KNOT_TLS_KEY`. Anyone who reaches it can mint join tokens
 > and read every node's Reality private key.
 
+Or use [deploy/docker-compose.yml](./deploy/docker-compose.yml) /
+[deploy/swarm-stack.yml](./deploy/swarm-stack.yml) — see
+[deploy/README.md](./deploy/README.md), which also covers the two swarm
+substitutions that fail silently.
+
 ### 2. Add nodes
 
 Generate a token in the panel, then on each machine:

@@ -95,13 +95,26 @@ td.dirty input{border-color:#3b82f6}
 </section>
 
 <section>
-  <h2>路由</h2>
+  <h2>链路</h2>
+  <div id="links"></div>
+  <div class="hint">每一对节点实际会走的路，由默认策略和下面的例外规则算出来。
+    <b>这是配置解析的结果，不是实时探测</b> —— 想确认真的通，在源节点上
+    <code>nc -z &lt;对端IP&gt; &lt;端口&gt;</code>（<code>ping</code> 不通是正常的）。</div>
+</section>
+
+<section>
+  <h2>路由例外</h2>
+  <div class="hint" style="margin:0 0 12px">
+    默认策略是<b>能直连就直连，否则任选一个中继</b>，绝大多数情况不用动。
+    只有想指定走哪条时才在这里加一条。
+  </div>
   <div id="routes"></div>
   <div class="row" style="margin-top:12px">
-    <button onclick="saveRoutes()">保存路由</button>
+    <button class="ghost" onclick="addRule()">+ 添加规则</button>
+    <button onclick="saveRoutes()">保存</button>
     <button class="ghost" onclick="load()">放弃改动</button>
+    <span class="err" id="routeErr"></span>
   </div>
-  <div class="hint">每格是「从这台 → 那台」走哪条路。<b>主</b>是首选，<b>备1 / 备2</b> 是它挂了之后依次尝试的。全部留空 = 用默认策略，灰字显示的就是默认会走的那条。填了多条时会自动做健康探测并在故障时切换。</div>
 </section>
 
 <section>
@@ -159,7 +172,7 @@ async function load() {
   document.getElementById('dsn').value  = S.default_server_name || '';
   document.getElementById('dfb').value  = S.default_fallback || '';
   document.getElementById('cidr').value = S.mesh_cidr || '';
-  renderNodes(); renderRoutes(); renderTokens();
+  renderNodes(); renderLinks(); renderRoutes(); renderTokens();
 }
 
 function ago(t) {
@@ -235,131 +248,143 @@ async function del(id, name) {
   await api('/api/node/delete', {id}); load();
 }
 
-// Routes are a from x to matrix. Only relays can be a hop.
+// The routing UI answers two different questions, so it is two views.
 //
-// Edits are staged into S.routes and only sent on save, so the grid can
-// re-render (to show or hide the next backup slot) without losing anything
-// the user typed in another cell.
-function renderRoutes() {
-  const relays = S.nodes.filter(n => n.is_relay && n.endpoint);
-  if (S.nodes.length < 2) {
-    document.getElementById('routes').innerHTML = '<div class="hint">至少接入 2 个节点后才能配置路由。</div>';
-    return;
-  }
-  let h = '<table><thead><tr><th>从 \\ 到</th>' +
-    S.nodes.map(n => `<th>${esc(n.name)}</th>`).join('') + '</tr></thead><tbody>';
-  for (const from of S.nodes) {
-    h += `<tr><td><b>${esc(from.name)}</b></td>`;
-    for (const to of S.nodes) {
-      if (from.id === to.id) { h += '<td class="sub">—</td>'; continue; }
-      h += `<td>${pathPicker(from, to, relays)}</td>`;
-    }
-    h += '</tr>';
-  }
-  document.getElementById('routes').innerHTML = h + '</tbody></table>';
-}
+//   "链路"     what path each pair actually takes  -- read-only, always shown
+//   "路由例外" what I have overridden               -- a list, usually empty
+//
+// It used to be one N x N grid of dropdowns. That grows quadratically, buries
+// the one rule you care about among cells that all say "default", and never
+// answers the question people actually open the page with.
 
+function relayList() {
+  return S.nodes.filter(n => n.is_relay && n.endpoint);
+}
+function nodeById(id) { return S.nodes.find(n => n.id === id); }
 function viaOf(fromId, toId) {
   const r = S.routes.find(r => r.from === fromId && r.to === toId);
   return (r && r.via) || [];
 }
-
-// What the head would pick on its own -- mirrors defaultPaths() in model.go.
-// Showing this beats "（默认）", which tells you nothing about what happens.
-function defaultLabel(from, to, relays) {
-  if (to.is_relay && to.endpoint) return '直连';
-  const r = relays.find(r => r.id !== from.id && r.id !== to.id);
-  return r ? '经 ' + esc(r.name) : '无可用路径';
+function pathLabel(p, relays) {
+  if (!p) return '?';
+  if (p.kind === 'direct') return '直连';
+  const r = nodeById(p.relay_id);
+  return r ? '经 ' + esc(r.name) : '经 已删除的中继';
 }
 
-function pathPicker(from, to, relays) {
-  const cur = viaOf(from.id, to.id);
+// Mirrors defaultPaths() in model.go. Kept in step by hand; if the two ever
+// disagree the panel is the one that is wrong.
+function defaultPaths(from, to) {
+  const out = [];
+  if (to.is_relay && to.endpoint) out.push({kind:'direct'});
+  for (const r of relayList()) {
+    if (r.id === to.id || r.id === from.id) continue;
+    out.push({kind:'relay', relay_id:r.id});
+  }
+  return out;
+}
+function effective(from, to) {
+  const cfg = viaOf(from.id, to.id);
+  const r = S.routes.find(r => r.from === from.id && r.to === to.id);
+  if (r) return {via: cfg, custom: true};
+  return {via: defaultPaths(from, to), custom: false};
+}
+
+// --- 链路（只读）---------------------------------------------------------
+function renderLinks() {
+  const el = document.getElementById('links');
+  if (S.nodes.length < 2) {
+    el.innerHTML = '<div class="hint">至少接入 2 个节点。</div>';
+    return;
+  }
+  let h = '<table><thead><tr><th>从</th><th>到</th><th>走哪条</th><th>来源</th></tr></thead><tbody>';
+  for (const from of S.nodes) {
+    for (const to of S.nodes) {
+      if (from.id === to.id) continue;
+      const e = effective(from, to);
+      let path;
+      if (!e.via.length) {
+        path = '<span class="off">不通</span>';
+      } else {
+        path = e.via.map((p, i) =>
+          `<span class="${i ? 'dflt' : ''}">${i ? '备' + i + ' ' : ''}${pathLabel(p)}</span>`
+        ).join(' <span class="dflt">→</span> ');
+      }
+      h += `<tr><td><b>${esc(from.name)}</b></td><td>${esc(to.name)}<br>` +
+           `<code>${to.vip}</code></td><td>${path}</td>` +
+           `<td class="sub">${e.custom ? '例外规则' : '默认策略'}</td></tr>`;
+    }
+  }
+  document.getElementById('links').innerHTML = h + '</tbody></table>';
+}
+
+// --- 路由例外（列表）-----------------------------------------------------
+function renderRoutes() {
+  const el = document.getElementById('routes');
+  if (!S.routes.length) {
+    el.innerHTML = '<div class="sub">没有例外，全部走默认策略。</div>';
+    return;
+  }
+  const opts = (sel, list, ph) => `<option value="">${ph}</option>` +
+    list.map(n => `<option value="${n.id}"${n.id === sel ? ' selected' : ''}>${esc(n.name)}</option>`).join('');
+
+  let h = '<table><thead><tr><th>从</th><th>到</th><th>按顺序尝试</th><th></th></tr></thead><tbody>';
+  S.routes.forEach((r, i) => {
+    h += `<tr>
+      <td><select onchange="setRule(${i},'from',this.value)">${opts(r.from, S.nodes, '选择')}</select></td>
+      <td><select onchange="setRule(${i},'to',this.value)">${opts(r.to, S.nodes, '选择')}</select></td>
+      <td>${slots(i, r)}</td>
+      <td><button class="ghost" onclick="delRule(${i})">删除</button></td>
+    </tr>`;
+  });
+  el.innerHTML = h + '</tbody></table>';
+}
+
+function slots(i, r) {
+  const from = nodeById(r.from), to = nodeById(r.to);
+  if (!from || !to) return '<span class="sub">先选好两端</span>';
+
   const opts = [{v:'', l:'—'}];
   if (to.is_relay && to.endpoint) opts.push({v:'direct', l:'直连'});
-  relays.filter(r => r.id !== from.id && r.id !== to.id)
-        .forEach(r => opts.push({v:'relay:'+r.id, l:'经 '+r.name}));
+  relayList().filter(x => x.id !== from.id && x.id !== to.id)
+             .forEach(x => opts.push({v:'relay:'+x.id, l:'经 '+x.name}));
 
-  // Render only the slots in use plus one empty one. An unconfigured cell is
-  // then a single control instead of three identical mystery dropdowns.
-  const n = Math.min(cur.length + 1, 3);
+  const via = r.via || [];
+  const n = Math.min(via.length + 1, 3);
   let h = '<div class="paths">';
-  for (let i = 0; i < n; i++) {
-    const p = cur[i];
+  for (let k = 0; k < n; k++) {
+    const p = via[k];
     const val = !p ? '' : (p.kind === 'direct' ? 'direct' : 'relay:' + p.relay_id);
-    h += `<span class="slot"><i>${i === 0 ? '主' : '备' + i}</i>` +
-      `<select onchange="setPath('${from.id}','${to.id}',${i},this.value)">` +
+    h += `<span class="slot"><i>${k === 0 ? '主' : '备' + k}</i>` +
+      `<select onchange="setSlot(${i},${k},this.value)">` +
       opts.map(o => `<option value="${o.v}"${o.v === val ? ' selected' : ''}>${o.l}</option>`).join('') +
       '</select></span>';
   }
-  if (!cur.length) h += `<span class="dflt">默认 · ${defaultLabel(from, to, relays)}</span>`;
+  if (!via.length) h += '<span class="dflt">⚠️ 空 = 切断这一对，不是「用默认」</span>';
   return h + '</div>';
 }
 
-function setPath(fromId, toId, i, val) {
-  const via = viaOf(fromId, toId).slice();
-  if (!val) {
-    via.splice(i, 1);                 // clearing a slot closes the gap
-  } else {
-    via[i] = val === 'direct' ? {kind:'direct'} : {kind:'relay', relay_id: val.slice(6)};
-  }
-  S.routes = S.routes.filter(r => !(r.from === fromId && r.to === toId));
-  if (via.length) S.routes.push({from: fromId, to: toId, via});
+function addRule() {
+  S.routes.push({from:'', to:'', via:[]});
   renderRoutes();
+}
+function delRule(i) { S.routes.splice(i, 1); renderRoutes(); renderLinks(); }
+function setRule(i, field, val) { S.routes[i][field] = val; renderRoutes(); renderLinks(); }
+function setSlot(i, k, val) {
+  const via = S.routes[i].via || (S.routes[i].via = []);
+  if (!val) via.splice(k, 1);           // clearing a slot closes the gap
+  else via[k] = val === 'direct' ? {kind:'direct'} : {kind:'relay', relay_id: val.slice(6)};
+  renderRoutes(); renderLinks();
 }
 
 async function saveRoutes() {
-  await api('/api/routes', S.routes);
+  const err = document.getElementById('routeErr');
+  err.textContent = '';
+  const bad = S.routes.find(r => !r.from || !r.to || r.from === r.to);
+  if (bad) { err.textContent = '每条规则的两端都要选，且不能相同。'; return; }
+  try { await api('/api/routes', S.routes); } catch (e) { err.textContent = e.message; return; }
   await load();
 }
-
-// --- adding a node -------------------------------------------------------
-// One button that mints a token and hands back the exact command to paste.
-// The token list below is still there for reusable / bulk enrolment.
-let joinToken = null;
-
-async function startJoin() {
-  const box = document.getElementById('joinBox');
-  if (box.style.display !== 'none') { renderJoinCmd(); return; }
-  try {
-    const r = await api('/api/token', {hours: 24, reusable: false});
-    joinToken = r.token;
-  } catch (e) {
-    document.getElementById('nodeErr').textContent = e.message;
-    return;
-  }
-  box.style.display = '';
-  document.getElementById('jNote').textContent = '一次性令牌，24 小时内有效。节点接入后令牌自动作废。';
-  renderJoinCmd();
-  renderTokens();
-}
-function closeJoin() { document.getElementById('joinBox').style.display = 'none'; }
-
-function joinCmdText() {
-  const relay = document.getElementById('jRole').value === 'relay';
-  const name  = document.getElementById('jName').value.trim();
-  const ep    = document.getElementById('jEp').value.trim();
-  const lines = [
-    'docker run -d --name knot-node --restart=always \\',
-    '  --network host --cap-add NET_ADMIN --device /dev/net/tun \\',
-    '  -v /etc/hosts:/etc/hosts -v knot-node:/var/lib/knot \\',
-    `  -e KNOT_HEAD=${location.origin} \\`,
-    `  -e KNOT_TOKEN=${joinToken || '<TOKEN>'} \\`,
-    `  -e KNOT_NAME=${name || '$(hostname)'} \\`,
-  ];
-  if (relay) lines.push(`  -e KNOT_ENDPOINT=${ep || '<公网IP>:443'} \\`);
-  lines.push('  zbysir/knot:latest node');
-  return lines.join('\n');
-}
-function renderJoinCmd() {
-  const relay = document.getElementById('jRole').value === 'relay';
-  document.getElementById('jEpWrap').style.display = relay ? '' : 'none';
-  document.getElementById('jCmd').textContent = joinCmdText();
-}
-function copyJoin() {
-  navigator.clipboard.writeText(joinCmdText());
-  document.getElementById('jNote').textContent = '已复制。';
-}
-['jName'].forEach(id => document.getElementById(id).addEventListener('input', renderJoinCmd));
 
 function renderTokens() {
   document.getElementById('tokens').innerHTML = (S.tokens || []).map(t => `
