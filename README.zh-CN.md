@@ -221,6 +221,47 @@ head 会自动生成它的 Reality 密钥对和 shortId，并把公钥下发给�
 > **空路径列表不是「用默认」**，而是「没有可用路径」，会直接切断这一对。
 > 「用默认」是整条规则不存在。
 
+### 让节点经 mesh 访问 head
+
+节点接入之后就不再需要 head 的公网地址了 —— 它可以走 mesh。这样 head 的公网
+端口就可以彻底关掉。
+
+```bash
+# 1. 先正常接入，用一个这台新机器确实够得着的地址
+docker run -d --name knot-node --restart=always \
+  --network host --cap-add NET_ADMIN --device /dev/net/tun \
+  -v /etc/hosts:/etc/hosts -v knot-node:/var/lib/knot \
+  -e KNOT_HEAD=http://<公网地址>:8080 \
+  -e KNOT_TOKEN=<令牌> \
+  zbysir/knot:latest node
+
+# 2. 起来并拿到 mesh 地址后，改指向 head 的 mesh 地址重建。不用再带 KNOT_TOKEN
+docker rm -f knot-node
+docker run -d --name knot-node --restart=always \
+  --network host --cap-add NET_ADMIN --device /dev/net/tun \
+  -v /etc/hosts:/etc/hosts -v knot-node:/var/lib/knot \
+  -e KNOT_HEAD=http://10.88.0.1:8080 \
+  zbysir/knot:latest node
+```
+
+`KNOT_HEAD` 会覆盖接入时记下的地址，所以第 2 步只是改个环境变量。
+
+启动日志会是下面这样，**每一行都是预期的**：
+
+```
+knot: head address changed http://<公网地址>:8080 -> http://10.88.0.1:8080
+knot: initial sync failed (... context deadline exceeded)   <- mesh 还没起来
+knot: starting from cached config                            <- 所以用上次的配置
+knot: relay: session to 10.88.0.1:9997 up                    <- mesh 起来了
+                                                             <- 下一轮轮询成功
+```
+
+**前提是这个节点至少成功接入过一次。** 没有缓存配置就没有东西能把 mesh 拉起来，
+把一台全新机器直接指向 mesh 地址是死锁：head 要 mesh，mesh 要配置，配置要 head。
+
+由于只有中继是所有节点都够得着的，**head 应该和中继放在一起** ——
+两者的可达性要求完全相同，所以同机部署是零成本的。
+
 ## 和已有站点共用 443
 
 Reality **不能**挂在 nginx/traefik 后面 —— 它必须自己握 TLS 才能伪装。

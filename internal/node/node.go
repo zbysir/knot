@@ -105,6 +105,17 @@ func (a *Agent) load() error {
 	p := filepath.Join(a.DataDir, "identity.json")
 	if b, err := os.ReadFile(p); err == nil {
 		if err := json.Unmarshal(b, &a.id); err == nil && a.id.NodeID != "" {
+			// KNOT_HEAD wins over the address recorded at join time. Without
+			// this, changing the env var does nothing at all -- sync() reads
+			// the persisted copy -- and moving the head (say, from its public
+			// address to its mesh address) silently has no effect.
+			if a.Head != "" && a.Head != a.id.Head {
+				fmt.Fprintf(os.Stderr, "knot: head address changed %s -> %s\n", a.id.Head, a.Head)
+				a.id.Head = a.Head
+				if nb, err := json.MarshalIndent(a.id, "", "  "); err == nil {
+					os.WriteFile(p, nb, 0o600)
+				}
+			}
 			return nil
 		}
 	}

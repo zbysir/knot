@@ -248,6 +248,52 @@ each cell takes an **ordered** list of candidate paths:
 > An **empty path list** is not "use the default" — it means *no path exists*
 > and will cut that pair off. "Use the default" is having no rule at all.
 
+### Pointing nodes at the head over the mesh
+
+Once a node has joined, it does not need the head's public address any more —
+it can reach it through the mesh. That lets you close the head's public port
+entirely.
+
+```bash
+# 1. Join normally, using an address the new node can actually reach.
+docker run -d --name knot-node --restart=always \
+  --network host --cap-add NET_ADMIN --device /dev/net/tun \
+  -v /etc/hosts:/etc/hosts -v knot-node:/var/lib/knot \
+  -e KNOT_HEAD=http://<public-addr>:8080 \
+  -e KNOT_TOKEN=<TOKEN> \
+  zbysir/knot:latest node
+
+# 2. Once it is up and has a mesh address, re-create it pointing at the head's
+#    MESH address. KNOT_TOKEN is no longer needed.
+docker rm -f knot-node
+docker run -d --name knot-node --restart=always \
+  --network host --cap-add NET_ADMIN --device /dev/net/tun \
+  -v /etc/hosts:/etc/hosts -v knot-node:/var/lib/knot \
+  -e KNOT_HEAD=http://10.88.0.1:8080 \
+  zbysir/knot:latest node
+```
+
+`KNOT_HEAD` overrides the address recorded at join time, so step 2 is just an
+env change.
+
+The startup then looks like this, and every line of it is expected:
+
+```
+knot: head address changed http://<public-addr>:8080 -> http://10.88.0.1:8080
+knot: initial sync failed (... context deadline exceeded)   <- mesh is not up yet
+knot: starting from cached config                            <- so use last known
+knot: relay: session to 10.88.0.1:9997 up                    <- mesh is up now
+                                                             <- next poll succeeds
+```
+
+**A node has to have joined at least once.** With no cached config there is
+nothing to bootstrap the mesh from, and pointing a brand-new node at a mesh
+address is a deadlock: the head needs the mesh, the mesh needs config, the
+config needs the head.
+
+Since only relays are reachable by every node, **the head belongs on a relay** —
+its reachability requirement is identical, so co-locating costs nothing.
+
 ## Sharing 443 with an existing site
 
 Reality **cannot** sit behind nginx or traefik — it has to own the TLS handshake
