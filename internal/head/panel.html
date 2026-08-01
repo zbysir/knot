@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>knot</title>
+<style>
+:root{--bg:#0f1115;--panel:#171a21;--line:#262b36;--fg:#e6e8ec;--dim:#8b93a5;--acc:#5b9cf8;--ok:#3fb950;--warn:#d29922}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+header{padding:16px 24px;border-bottom:1px solid var(--line);display:flex;align-items:baseline;gap:12px}
+h1{font-size:16px;margin:0;letter-spacing:.04em}
+.sub{color:var(--dim);font-size:12px}
+main{padding:24px;max-width:1100px}
+section{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px;margin-bottom:20px}
+h2{font-size:13px;margin:0 0 12px;color:var(--dim);text-transform:uppercase;letter-spacing:.08em;font-weight:600}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;color:var(--dim);font-weight:500;padding:6px 10px 6px 0;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:8px 10px 8px 0;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:0}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;background:#0b0d11;padding:2px 6px;border-radius:4px;color:#cbd3e1}
+button{background:var(--acc);color:#06121f;border:0;border-radius:6px;padding:7px 14px;font:inherit;font-weight:600;cursor:pointer}
+button.ghost{background:transparent;color:var(--dim);border:1px solid var(--line);font-weight:400}
+button:hover{filter:brightness(1.1)}
+input,select{background:#0b0d11;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:7px 10px;font:inherit}
+label{display:block;color:var(--dim);font-size:12px;margin-bottom:4px}
+.row{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}
+.pill{display:inline-block;padding:1px 8px;border-radius:99px;font-size:11px;border:1px solid var(--line)}
+.relay{color:var(--ok);border-color:#1d4429}
+.leaf{color:var(--dim)}
+.on{color:var(--ok)} .off{color:var(--warn)}
+#login{max-width:340px;margin:14vh auto}
+.err{color:#f85149;font-size:13px;min-height:18px}
+.hint{color:var(--dim);font-size:12px;margin-top:8px}
+.mono{font-family:ui-monospace,Menlo,monospace}
+.paths{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.slot{display:inline-flex;align-items:center;gap:4px}
+.slot i{font-style:normal;font-size:11px;color:#7b8794;min-width:20px}
+.slot select{font-size:12px;padding:4px 6px}
+.dflt{font-size:12px;color:#7b8794}
+td.dirty input{border-color:#3b82f6}
+</style>
+</head>
+<body>
+
+<div id="login">
+  <section>
+    <h2>knot</h2>
+    <label>面板密码</label>
+    <input id="pw" type="password" style="width:100%" autofocus>
+    <div class="err" id="loginErr"></div>
+    <button onclick="login()" style="width:100%">登录</button>
+  </section>
+</div>
+
+<div id="app" style="display:none">
+<header><h1>knot</h1><span class="sub" id="meta"></span></header>
+<main>
+
+<section>
+  <h2>节点</h2>
+  <div class="row" style="margin-bottom:14px">
+    <button onclick="startJoin()">+ 接入新节点</button>
+    <span class="sub">生成令牌，然后在新机器上跑一条命令</span>
+  </div>
+  <div id="joinBox" style="display:none;margin-bottom:16px;padding:14px;background:#0b0d11;border:1px solid var(--line);border-radius:8px">
+    <div class="row" style="margin-bottom:10px">
+      <div><label>节点名</label><input id="jName" placeholder="留空 = 用机器的 hostname" style="width:220px"></div>
+      <div><label>角色</label>
+        <select id="jRole" onchange="renderJoinCmd()" style="width:200px">
+          <option value="leaf">叶子（不开端口）</option>
+          <option value="relay">中继（需要公网端口）</option>
+        </select>
+      </div>
+      <div id="jEpWrap" style="display:none"><label>对外端点</label><input id="jEp" placeholder="1.2.3.4:443" style="width:170px" oninput="renderJoinCmd()"></div>
+      <button class="ghost" onclick="closeJoin()">收起</button>
+    </div>
+    <div class="hint" style="margin:0 0 6px">在新机器上执行：</div>
+    <div class="mono" id="jCmd" style="background:#000;padding:10px;border-radius:6px;font-size:12px;white-space:pre-wrap;word-break:break-all"></div>
+    <div class="row" style="margin-top:10px">
+      <button class="ghost" onclick="copyJoin()">复制命令</button>
+      <span class="sub" id="jNote"></span>
+    </div>
+  </div>
+  <table><thead><tr>
+    <th>名称</th><th>网内地址</th><th>角色</th><th>对外端点</th><th>伪装 SNI</th><th>回落</th><th>最近上报</th><th></th>
+  </tr></thead><tbody id="nodes"></tbody></table>
+  <div class="row" style="margin-top:12px">
+    <button onclick="saveNodes()">保存节点</button>
+    <button class="ghost" onclick="load()">放弃改动</button>
+    <span class="err" id="nodeErr"></span>
+  </div>
+  <div class="hint">「中继」= <b>有对外端点</b>的节点，别人能拨进来。清空对外端点就变回叶子，伪装 SNI 和回落会一并清掉（那两个只对中继有意义）。</div>
+  <div class="hint">回落是 Reality 把非隧道流量转发过去的地方，指向本机真实站点，主动探测就只能看到那个站点。<b>那个站点的证书链不能太大</b>（超过约 4KB 会让连接在认证成功之后才断）。</div>
+</section>
+
+<section>
+  <h2>路由</h2>
+  <div id="routes"></div>
+  <div class="row" style="margin-top:12px">
+    <button onclick="saveRoutes()">保存路由</button>
+    <button class="ghost" onclick="load()">放弃改动</button>
+  </div>
+  <div class="hint">每格是「从这台 → 那台」走哪条路。<b>主</b>是首选，<b>备1 / 备2</b> 是它挂了之后依次尝试的。全部留空 = 用默认策略，灰字显示的就是默认会走的那条。填了多条时会自动做健康探测并在故障时切换。</div>
+</section>
+
+<section>
+  <h2>接入令牌</h2>
+  <div class="row">
+    <div><label>有效期（小时）</label><input id="tokHours" type="number" value="24" style="width:110px"></div>
+    <div><label><input id="tokReuse" type="checkbox"> 可重复使用</label></div>
+    <button onclick="newToken()">生成</button>
+  </div>
+  <table style="margin-top:12px"><thead><tr><th>令牌</th><th>类型</th><th>过期</th><th>已用</th></tr></thead><tbody id="tokens"></tbody></table>
+  <div class="hint">节点侧一条命令即可接入，把 <code>&lt;TOKEN&gt;</code> 换成上面生成的：</div>
+  <div class="hint mono" id="joinCmd"></div>
+</section>
+
+<section>
+  <h2>默认值</h2>
+  <div class="row">
+    <div><label>伪装 SNI</label><input id="dsn" style="width:220px"></div>
+    <div><label>回落地址</label><input id="dfb" style="width:200px"></div>
+    <div><label>网段</label><input id="cidr" style="width:150px"></div>
+    <button onclick="saveSettings()">保存</button>
+  </div>
+</section>
+
+</main>
+</div>
+
+<script>
+let S = null;
+
+async function api(path, body) {
+  const o = body ? {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)} : {};
+  const r = await fetch(path, o);
+  if (r.status === 401) { show('login'); throw new Error('need login'); }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+  return j;
+}
+function show(which) {
+  document.getElementById('login').style.display = which === 'login' ? '' : 'none';
+  document.getElementById('app').style.display   = which === 'app'   ? '' : 'none';
+}
+async function login() {
+  try {
+    await api('/api/login', {password: document.getElementById('pw').value});
+    show('app'); load();
+  } catch (e) { document.getElementById('loginErr').textContent = e.message; }
+}
+document.getElementById('pw').addEventListener('keydown', e => { if (e.key === 'Enter') login(); });
+
+async function load() {
+  S = await api('/api/state');
+  document.getElementById('meta').textContent =
+    `${S.nodes.length} 个节点 · ${S.mesh_cidr}`;
+  document.getElementById('dsn').value  = S.default_server_name || '';
+  document.getElementById('dfb').value  = S.default_fallback || '';
+  document.getElementById('cidr').value = S.mesh_cidr || '';
+  renderNodes(); renderRoutes(); renderTokens();
+}
+
+function ago(t) {
+  if (!t || t.startsWith('0001')) return '—';
+  const s = (Date.now() - new Date(t)) / 1000;
+  if (s < 90) return `<span class="on">在线</span>`;
+  if (s < 3600) return `<span class="off">${Math.round(s/60)} 分钟前</span>`;
+  return `<span class="off">${Math.round(s/3600)} 小时前</span>`;
+}
+
+// Node edits are staged in S.nodes and only sent on save. They used to save on
+// blur, which meant a half-typed "1.2.3.4:" was committed the moment you
+// tabbed away.
+function renderNodes() {
+  document.getElementById('nodes').innerHTML = S.nodes.map((n, i) => {
+    const leaf = !n.endpoint;
+    // SNI and fallback only mean anything for a relay. Greying them out for a
+    // leaf is what stops the panel from showing settings a node does not use.
+    const relayOnly = leaf ? ' disabled title="只对中继有意义，填了对外端点才能编辑"' : '';
+    return `<tr>
+      <td><b>${esc(n.name)}</b></td>
+      <td><code>${n.vip}</code></td>
+      <td>${leaf ? '<span class="pill leaf">叶子</span>' : '<span class="pill relay">中继</span>'}</td>
+      <td><input value="${esc(n.endpoint||'')}" placeholder="留空 = 叶子" style="width:190px"
+           oninput="setNode(${i},'endpoint',this.value)"></td>
+      <td><input value="${esc(n.server_name||'')}" placeholder="${leaf ? '—' : 'www.example.com'}" style="width:170px"
+           oninput="setNode(${i},'server_name',this.value)"${relayOnly}></td>
+      <td><input value="${esc(n.fallback||'')}" placeholder="${leaf ? '—' : '127.0.0.1:8443'}" style="width:150px"
+           oninput="setNode(${i},'fallback',this.value)"${relayOnly}></td>
+      <td>${ago(n.last_seen)}</td>
+      <td><button class="ghost" onclick="del('${n.id}','${esc(n.name)}')">删除</button></td>
+    </tr>`;
+  }).join('');
+}
+
+function setNode(i, field, val) {
+  S.nodes[i][field] = val;
+  // Re-render only when the role flips, so the row's enabled/disabled state
+  // and the pill follow the endpoint immediately.
+  const wasLeaf = document.querySelectorAll('#nodes tr')[i].querySelector('.pill').classList.contains('leaf');
+  if (field === 'endpoint' && wasLeaf !== !val) {
+    const sel = document.activeElement, pos = sel && sel.selectionStart;
+    renderNodes();
+    const again = document.querySelectorAll('#nodes tr')[i].querySelectorAll('input')[0];
+    again.focus();
+    if (pos != null) again.setSelectionRange(pos, pos);
+  }
+}
+
+async function saveNodes() {
+  const err = document.getElementById('nodeErr');
+  err.textContent = '';
+  try {
+    for (const n of S.nodes) {
+      // Send every field explicitly. "" means clear -- the server can tell
+      // that apart from "not sent", which is how a demoted relay gets rid of
+      // its old endpoint.
+      await api('/api/node/update', {
+        id: n.id,
+        endpoint: n.endpoint || '',
+        server_name: n.server_name || '',
+        fallback: n.fallback || '',
+      });
+    }
+  } catch (e) {
+    err.textContent = e.message;
+    return;
+  }
+  await load();
+}
+async function del(id, name) {
+  if (!confirm(`删除节点 ${name}？它的地址会被回收，指向它的路由也会一并清掉。`)) return;
+  await api('/api/node/delete', {id}); load();
+}
+
+// Routes are a from x to matrix. Only relays can be a hop.
+//
+// Edits are staged into S.routes and only sent on save, so the grid can
+// re-render (to show or hide the next backup slot) without losing anything
+// the user typed in another cell.
+function renderRoutes() {
+  const relays = S.nodes.filter(n => n.is_relay && n.endpoint);
+  if (S.nodes.length < 2) {
+    document.getElementById('routes').innerHTML = '<div class="hint">至少接入 2 个节点后才能配置路由。</div>';
+    return;
+  }
+  let h = '<table><thead><tr><th>从 \\ 到</th>' +
+    S.nodes.map(n => `<th>${esc(n.name)}</th>`).join('') + '</tr></thead><tbody>';
+  for (const from of S.nodes) {
+    h += `<tr><td><b>${esc(from.name)}</b></td>`;
+    for (const to of S.nodes) {
+      if (from.id === to.id) { h += '<td class="sub">—</td>'; continue; }
+      h += `<td>${pathPicker(from, to, relays)}</td>`;
+    }
+    h += '</tr>';
+  }
+  document.getElementById('routes').innerHTML = h + '</tbody></table>';
+}
+
+function viaOf(fromId, toId) {
+  const r = S.routes.find(r => r.from === fromId && r.to === toId);
+  return (r && r.via) || [];
+}
+
+// What the head would pick on its own -- mirrors defaultPaths() in model.go.
+// Showing this beats "（默认）", which tells you nothing about what happens.
+function defaultLabel(from, to, relays) {
+  if (to.is_relay && to.endpoint) return '直连';
+  const r = relays.find(r => r.id !== from.id && r.id !== to.id);
+  return r ? '经 ' + esc(r.name) : '无可用路径';
+}
+
+function pathPicker(from, to, relays) {
+  const cur = viaOf(from.id, to.id);
+  const opts = [{v:'', l:'—'}];
+  if (to.is_relay && to.endpoint) opts.push({v:'direct', l:'直连'});
+  relays.filter(r => r.id !== from.id && r.id !== to.id)
+        .forEach(r => opts.push({v:'relay:'+r.id, l:'经 '+r.name}));
+
+  // Render only the slots in use plus one empty one. An unconfigured cell is
+  // then a single control instead of three identical mystery dropdowns.
+  const n = Math.min(cur.length + 1, 3);
+  let h = '<div class="paths">';
+  for (let i = 0; i < n; i++) {
+    const p = cur[i];
+    const val = !p ? '' : (p.kind === 'direct' ? 'direct' : 'relay:' + p.relay_id);
+    h += `<span class="slot"><i>${i === 0 ? '主' : '备' + i}</i>` +
+      `<select onchange="setPath('${from.id}','${to.id}',${i},this.value)">` +
+      opts.map(o => `<option value="${o.v}"${o.v === val ? ' selected' : ''}>${o.l}</option>`).join('') +
+      '</select></span>';
+  }
+  if (!cur.length) h += `<span class="dflt">默认 · ${defaultLabel(from, to, relays)}</span>`;
+  return h + '</div>';
+}
+
+function setPath(fromId, toId, i, val) {
+  const via = viaOf(fromId, toId).slice();
+  if (!val) {
+    via.splice(i, 1);                 // clearing a slot closes the gap
+  } else {
+    via[i] = val === 'direct' ? {kind:'direct'} : {kind:'relay', relay_id: val.slice(6)};
+  }
+  S.routes = S.routes.filter(r => !(r.from === fromId && r.to === toId));
+  if (via.length) S.routes.push({from: fromId, to: toId, via});
+  renderRoutes();
+}
+
+async function saveRoutes() {
+  await api('/api/routes', S.routes);
+  await load();
+}
+
+// --- adding a node -------------------------------------------------------
+// One button that mints a token and hands back the exact command to paste.
+// The token list below is still there for reusable / bulk enrolment.
+let joinToken = null;
+
+async function startJoin() {
+  const box = document.getElementById('joinBox');
+  if (box.style.display !== 'none') { renderJoinCmd(); return; }
+  try {
+    const r = await api('/api/token', {hours: 24, reusable: false});
+    joinToken = r.token;
+  } catch (e) {
+    document.getElementById('nodeErr').textContent = e.message;
+    return;
+  }
+  box.style.display = '';
+  document.getElementById('jNote').textContent = '一次性令牌，24 小时内有效。节点接入后令牌自动作废。';
+  renderJoinCmd();
+  renderTokens();
+}
+function closeJoin() { document.getElementById('joinBox').style.display = 'none'; }
+
+function joinCmdText() {
+  const relay = document.getElementById('jRole').value === 'relay';
+  const name  = document.getElementById('jName').value.trim();
+  const ep    = document.getElementById('jEp').value.trim();
+  const lines = [
+    'docker run -d --name knot-node --restart=always \\',
+    '  --network host --cap-add NET_ADMIN --device /dev/net/tun \\',
+    '  -v /etc/hosts:/etc/hosts -v knot-node:/var/lib/knot \\',
+    `  -e KNOT_HEAD=${location.origin} \\`,
+    `  -e KNOT_TOKEN=${joinToken || '<TOKEN>'} \\`,
+    `  -e KNOT_NAME=${name || '$(hostname)'} \\`,
+  ];
+  if (relay) lines.push(`  -e KNOT_ENDPOINT=${ep || '<公网IP>:443'} \\`);
+  lines.push('  ghcr.io/zbysir/knot:latest node');
+  return lines.join('\n');
+}
+function renderJoinCmd() {
+  const relay = document.getElementById('jRole').value === 'relay';
+  document.getElementById('jEpWrap').style.display = relay ? '' : 'none';
+  document.getElementById('jCmd').textContent = joinCmdText();
+}
+function copyJoin() {
+  navigator.clipboard.writeText(joinCmdText());
+  document.getElementById('jNote').textContent = '已复制。';
+}
+['jName'].forEach(id => document.getElementById(id).addEventListener('input', renderJoinCmd));
+
+function renderTokens() {
+  document.getElementById('tokens').innerHTML = (S.tokens || []).map(t => `
+    <tr><td><code>${t.token}</code></td>
+        <td>${t.reusable ? '可重复' : '一次性'}</td>
+        <td>${new Date(t.expires).toLocaleString()}</td>
+        <td>${t.used}</td></tr>`).join('') ||
+    '<tr><td colspan="4" class="sub">还没有令牌</td></tr>';
+  document.getElementById('joinCmd').innerHTML = esc(
+`docker run -d --name knot --restart=always \\
+  --cap-add NET_ADMIN --device /dev/net/tun \\
+  --network host -v knot:/var/lib/knot \\
+  -e KNOT_HEAD=${location.origin} -e KNOT_TOKEN=<TOKEN> \\
+  -e KNOT_NAME=$(hostname) \\
+  ghcr.io/zbysir/knot:latest node`).replace(/\n/g, '<br>');
+}
+
+async function newToken() {
+  await api('/api/token', {
+    reusable: document.getElementById('tokReuse').checked,
+    hours: +document.getElementById('tokHours').value || 24,
+  });
+  load();
+}
+async function saveSettings() {
+  await api('/api/settings', {
+    default_server_name: document.getElementById('dsn').value,
+    default_fallback:    document.getElementById('dfb').value,
+    mesh_cidr:           document.getElementById('cidr').value,
+  });
+  load();
+}
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// If a session cookie is already valid we land straight in the app.
+api('/api/state').then(() => { show('app'); load(); }).catch(() => show('login'));
+</script>
+</body>
+</html>
