@@ -347,7 +347,7 @@ function joinCmdText() {
     `  -e KNOT_NAME=${name || '$(hostname)'} \\`,
   ];
   if (relay) lines.push(`  -e KNOT_ENDPOINT=${ep || '<公网IP>:443'} \\`);
-  lines.push('  ghcr.io/zbysir/knot:latest node');
+  lines.push('  zbysir/knot:latest node');
   return lines.join('\n');
 }
 function renderJoinCmd() {
@@ -374,7 +374,7 @@ function renderTokens() {
   --network host -v knot:/var/lib/knot \\
   -e KNOT_HEAD=${location.origin} -e KNOT_TOKEN=<TOKEN> \\
   -e KNOT_NAME=$(hostname) \\
-  ghcr.io/zbysir/knot:latest node`).replace(/\n/g, '<br>');
+  zbysir/knot:latest node`).replace(/\n/g, '<br>');
 }
 
 async function newToken() {

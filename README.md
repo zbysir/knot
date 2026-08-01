@@ -2,6 +2,9 @@
 
 [中文](./README.zh-CN.md)
 
+[![ci](https://github.com/zbysir/knot/actions/workflows/ci.yml/badge.svg)](https://github.com/zbysir/knot/actions/workflows/ci.yml)
+[![docker](https://img.shields.io/docker/v/zbysir/knot?logo=docker&label=docker%20hub)](https://hub.docker.com/r/zbysir/knot)
+
 A small mesh network whose data plane is **VLESS + Reality**. Every node gets a
 fixed private IP; joining is one `docker run` and a token.
 
@@ -185,7 +188,7 @@ docker run -d --name knot-head --restart=always \
   -p 8080:8080 \
   -e KNOT_PASSWORD=<panel password> \
   -v knot-head:/var/lib/knot \
-  ghcr.io/zbysir/knot:latest head
+  zbysir/knot:latest head
 ```
 
 Open `http://<head>:8080` and log in.
@@ -210,7 +213,7 @@ docker run -d --name knot-node --restart=always \
   -e KNOT_HEAD=https://head.example.com \
   -e KNOT_TOKEN=<TOKEN> \
   -e KNOT_NAME=$(hostname) \
-  ghcr.io/zbysir/knot:latest node
+  zbysir/knot:latest node
 ```
 
 `KNOT_TOKEN` is only needed on the first run; after that the node authenticates

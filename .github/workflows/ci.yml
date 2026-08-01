@@ -1,0 +1,93 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+env:
+  IMAGE: zbysir/knot
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go build ./...
+      - run: go vet ./...
+      # -race matters here: the panel's session map is shared across request
+      # goroutines, and an unguarded map is a hard panic rather than a bad read.
+      - run: go test -race ./...
+
+  docker:
+    needs: test
+    runs-on: ubuntu-latest
+    # Pull requests build (so a broken Dockerfile fails the PR) but never push;
+    # forks do not have the registry credentials anyway.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      # Without this the workflow is red until someone configures the registry
+      # secrets, and stays red on every fork. Build always, push only when we
+      # actually have somewhere to push to.
+      - id: creds
+        env:
+          U: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          if [ -n "$U" ]; then echo "ok=true" >>"$GITHUB_OUTPUT"; else
+            echo "ok=false" >>"$GITHUB_OUTPUT"
+            echo "::notice::DOCKERHUB_USERNAME/DOCKERHUB_TOKEN not set -- building without pushing"
+          fi
+
+      - name: Log in to Docker Hub
+        if: steps.creds.outputs.ok == 'true' && github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          # The Dockerfile cross-compiles from BUILDPLATFORM via GOOS/GOARCH,
+          # so arm64 is a real compile, not QEMU emulation. Emulating the
+          # sing-box build instead takes tens of minutes.
+          platforms: linux/amd64,linux/arm64
+          push: ${{ steps.creds.outputs.ok == 'true' && github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Update Docker Hub description
+        if: steps.creds.outputs.ok == 'true' && github.ref == 'refs/heads/main'
+        uses: peter-evans/dockerhub-description@v4
+        continue-on-error: true   # a missing/limited token should not fail the build
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ env.IMAGE }}
+          short-description: "Mesh networking with a VLESS+Reality data plane"
+          readme-filepath: ./README.md

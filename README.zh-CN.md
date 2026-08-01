@@ -2,6 +2,9 @@
 
 [English](./README.md)
 
+[![ci](https://github.com/zbysir/knot/actions/workflows/ci.yml/badge.svg)](https://github.com/zbysir/knot/actions/workflows/ci.yml)
+[![docker](https://img.shields.io/docker/v/zbysir/knot?logo=docker&label=docker%20hub)](https://hub.docker.com/r/zbysir/knot)
+
 一个数据面走 **VLESS + Reality** 的小型组网工具。每个节点分一个固定内网 IP，
 接入只需要一条 `docker run` 加一个 token。
 
@@ -165,7 +168,7 @@ docker run -d --name knot-head --restart=always \
   -p 8080:8080 \
   -e KNOT_PASSWORD=<面板密码> \
   -v knot-head:/var/lib/knot \
-  ghcr.io/zbysir/knot:latest head
+  zbysir/knot:latest head
 ```
 
 打开 `http://<head>:8080` 登录。
@@ -188,7 +191,7 @@ docker run -d --name knot-node --restart=always \
   -e KNOT_HEAD=https://head.example.com \
   -e KNOT_TOKEN=<令牌> \
   -e KNOT_NAME=$(hostname) \
-  ghcr.io/zbysir/knot:latest node
+  zbysir/knot:latest node
 ```
 
 `KNOT_TOKEN` 只有首次需要，之后节点用自己的 key 认证。
