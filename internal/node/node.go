@@ -36,15 +36,17 @@ type Agent struct {
 	SingBox  string // path to the sing-box binary
 	Insecure bool   // skip TLS verification against the head
 
-	id      Identity
-	etag    string
-	cmd     *exec.Cmd
-	cfgPath string
-	relay   *relayd
+	id       Identity
+	etag     string
+	cmd      *exec.Cmd
+	cfgPath  string
+	planPath string
+	relay    *relayd
 }
 
 func (a *Agent) Run(ctx context.Context) error {
 	a.cfgPath = filepath.Join(a.DataDir, "singbox.json")
+	a.planPath = filepath.Join(a.DataDir, "relay-plan.json")
 	if err := os.MkdirAll(a.DataDir, 0o700); err != nil {
 		return err
 	}
@@ -54,9 +56,32 @@ func (a *Agent) Run(ctx context.Context) error {
 	defer a.stopSingBox()
 	defer a.stopRelay()
 
-	// First sync must succeed, otherwise we have nothing to run.
+	// A failed first sync is not fatal if we still have the config from last
+	// time. Two situations need this:
+	//
+	//   - the head is simply down while this node restarts. Exiting here threw
+	//     away a working data plane for no reason.
+	//   - KNOT_HEAD points at the head's MESH address. Then it is unreachable
+	//     by construction until sing-box is up, so requiring the head first is
+	//     a deadlock: head needs mesh, mesh needs config, config needs head.
+	//
+	// The ticker below picks up the real config as soon as the head answers.
 	if err := a.sync(ctx); err != nil {
-		return fmt.Errorf("initial sync: %w", err)
+		if _, statErr := os.Stat(a.cfgPath); statErr != nil {
+			return fmt.Errorf("initial sync (and no cached config): %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "knot: initial sync failed (%v)\nknot: starting from cached config\n", err)
+		if b, rerr := os.ReadFile(a.planPath); rerr == nil {
+			var p Plan
+			if json.Unmarshal(b, &p) == nil {
+				if err := a.startRelay(p); err != nil {
+					fmt.Fprintf(os.Stderr, "knot: cached relay plan failed: %v\n", err)
+				}
+			}
+		}
+		if err := a.restartSingBox(); err != nil {
+			return fmt.Errorf("initial sync failed and cached config is unusable: %w", err)
+		}
 	}
 
 	t := time.NewTicker(30 * time.Second)
@@ -145,6 +170,13 @@ func (a *Agent) sync(ctx context.Context) error {
 		fmt.Fprintf(os.Stderr, "knot: hosts update failed: %v\n", err)
 	}
 	a.etag = resp.Header.Get("ETag")
+	// Cache the relay plan next to the sing-box config. Without it a node that
+	// cold-starts while the head is unreachable comes up half working: its own
+	// outbound traffic flows, but it holds no relay session, so nothing can be
+	// pushed back down to it and it is silently unreachable.
+	if b, err := json.Marshal(cr.Relay); err == nil {
+		os.WriteFile(a.planPath, b, 0o600)
+	}
 	// Relay first: sing-box will start forwarding peer traffic into the SOCKS
 	// listener as soon as it comes up, so that listener has to exist already.
 	if err := a.startRelay(cr.Relay); err != nil {
