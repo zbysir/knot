@@ -39,19 +39,51 @@ type PlanPeer struct {
 
 // relayd owns everything on the relay data path for one node.
 type relayd struct {
-	plan   Plan
 	client *relay.Client
 	reg    *relay.Registry
 	socks  net.Listener
+	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu  sync.Mutex
-	srv net.Listener // rebound by listenAndServe, so guarded
+	mu      sync.Mutex
+	plan    Plan                          // replaced wholesale by setPlan
+	srv     net.Listener                  // rebound by listenAndServe, so guarded
+	uplinks map[string]context.CancelFunc // relay addr -> stop its Maintain loop
 }
 
 func logf(f string, v ...any) { fmt.Fprintf(os.Stderr, "knot: "+f+"\n", v...) }
 
-// start brings the relay machinery up for a new plan. It is safe to call
+// applyPlan brings the relay machinery in line with a new plan, rebuilding only
+// what the change actually requires.
+//
+// Peers and PeerKeys both describe the whole mesh, so they change whenever ANY
+// node joins or leaves. Rebuilding for that meant closing the relay port and
+// cancelling every session, so adding one leaf disconnected all the others and
+// made each reconnect on a 1s/2s/4s backoff. Only this node's own identity or
+// its two listen addresses genuinely need a rebuild.
+func (a *Agent) applyPlan(p Plan) error {
+	if p.SelfID == "" {
+		a.stopRelay()
+		return nil
+	}
+	r := a.relay
+	if r == nil || r.needsRebuild(p) {
+		return a.startRelay(p)
+	}
+	r.setPlan(p)
+	r.syncUplinks(p.Uplinks)
+	return nil
+}
+
+func (r *relayd) needsRebuild(p Plan) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cur := r.plan
+	return cur.SelfID != p.SelfID || cur.Key != p.Key ||
+		cur.IsRelay != p.IsRelay || cur.Listen != p.Listen || cur.Socks != p.Socks
+}
+
+// startRelay brings the relay machinery up from scratch. It is safe to call
 // repeatedly; the previous instance is torn down first.
 func (a *Agent) startRelay(p Plan) error {
 	a.stopRelay()
@@ -59,21 +91,27 @@ func (a *Agent) startRelay(p Plan) error {
 		return nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	r := &relayd{plan: p, cancel: cancel}
+	r := &relayd{
+		plan:    p,
+		ctx:     ctx,
+		cancel:  cancel,
+		uplinks: map[string]context.CancelFunc{},
+	}
 
 	// A relay accepts sessions from leaves. The listener is plain TCP: the
 	// Reality wrapping already happened in sing-box before we see the bytes.
 	if p.IsRelay && p.Listen != "" {
 		r.reg = relay.NewRegistry()
-		keys := p.PeerKeys
 		srv := &relay.Server{
 			Reg: r.reg,
 			// The head issues each node's key and tells the relay the hashes.
 			// Accepting any non-empty key would let anyone who reaches this
-			// port register as any node.
+			// port register as any node. Read through peerKey rather than
+			// capturing the map: a new plan replaces it while sessions are
+			// being accepted on this very callback.
 			Auth: func(nodeID, key string) bool {
-				want, ok := keys[nodeID]
-				return ok && want != "" && hashKey(key) == want
+				want := r.peerKey(nodeID)
+				return want != "" && hashKey(key) == want
 			},
 			Logf: logf,
 		}
@@ -93,9 +131,7 @@ func (a *Agent) startRelay(p Plan) error {
 			return d.DialContext(ctx, "tcp", addr)
 		},
 	}
-	for _, addr := range p.Uplinks {
-		go r.client.Maintain(ctx, addr)
-	}
+	r.syncUplinks(p.Uplinks)
 
 	if p.Socks != "" {
 		ln, err := net.Listen("tcp", p.Socks)
@@ -109,6 +145,51 @@ func (a *Agent) startRelay(p Plan) error {
 	}
 	a.relay = r
 	return nil
+}
+
+func (r *relayd) setPlan(p Plan) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.plan = p
+}
+
+// peerKey returns the expected key hash for a node, or "" if it is not allowed
+// on this relay.
+func (r *relayd) peerKey(nodeID string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.plan.PeerKeys[nodeID]
+}
+
+// syncUplinks starts a session to each relay that is new in the plan and stops
+// the ones that have gone, leaving the sessions that are still wanted alone.
+func (r *relayd) syncUplinks(addrs []string) {
+	want := make(map[string]bool, len(addrs))
+	for _, addr := range addrs {
+		want[addr] = true
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for addr, stop := range r.uplinks {
+		if want[addr] {
+			continue
+		}
+		stop()
+		// Cancelling is not enough to end the session: the context only governs
+		// the dial, while Maintain is parked in AcceptStream on a live
+		// connection. Close it so the goroutine actually returns.
+		r.client.Close(addr)
+		delete(r.uplinks, addr)
+		logf("relay: uplink %s dropped (no longer in plan)", addr)
+	}
+	for addr := range want {
+		if _, ok := r.uplinks[addr]; ok {
+			continue
+		}
+		ctx, cancel := context.WithCancel(r.ctx)
+		r.uplinks[addr] = cancel
+		go r.client.Maintain(ctx, addr)
+	}
 }
 
 // hashKey mirrors the head's hashKey. The two must stay in step; the salt is
@@ -151,16 +232,23 @@ func (a *Agent) stopRelay() {
 	if a.relay == nil {
 		return
 	}
-	a.relay.cancel()
-	if a.relay.socks != nil {
-		a.relay.socks.Close()
-	}
-	a.relay.mu.Lock()
-	if a.relay.srv != nil {
-		a.relay.srv.Close()
-	}
-	a.relay.mu.Unlock()
+	r := a.relay
 	a.relay = nil
+	r.cancel()
+	if r.socks != nil {
+		r.socks.Close()
+	}
+	r.mu.Lock()
+	if r.srv != nil {
+		r.srv.Close()
+	}
+	for addr := range r.uplinks {
+		if r.client != nil {
+			r.client.Close(addr) // see syncUplinks: cancelling alone leaves it parked
+		}
+	}
+	r.uplinks = nil
+	r.mu.Unlock()
 }
 
 // serveSocks accepts the connections sing-box hands us for peer VIPs and
@@ -243,10 +331,14 @@ func (r *relayd) dialPeer(host string, port int) (net.Conn, error) {
 	return nil, lastErr
 }
 
+// peerByVIP returns a copy: the plan it comes from is replaced under us on every
+// sync, and the caller goes on to use this across a dial.
 func (r *relayd) peerByVIP(vip string) *PlanPeer {
-	for i := range r.plan.Peers {
-		if r.plan.Peers[i].VIP == vip {
-			return &r.plan.Peers[i]
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, p := range r.plan.Peers {
+		if p.VIP == vip {
+			return &p
 		}
 	}
 	return nil

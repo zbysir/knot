@@ -114,6 +114,16 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 400, "name required")
 		return
 	}
+	// Validate the endpoint here, not just in the panel. An unparseable one
+	// reaches sb.Generate as a relay every other node has to build an outbound
+	// for, so a single node joining with a typo in KNOT_ENDPOINT used to break
+	// config generation for the WHOLE mesh.
+	if req.Endpoint != "" {
+		if err := checkHostPort(req.Endpoint); err != nil {
+			httpErr(w, 400, fmt.Sprintf("KNOT_ENDPOINT %s", err))
+			return
+		}
+	}
 	var out joinResp
 	err := s.store.Write(func(st *model.State) error {
 		tok := findToken(st, req.Token)
@@ -173,28 +183,45 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 
 // handleConfig returns the sing-box config plus the hosts block. Nodes poll
 // this; the ETag lets them skip a restart when nothing changed.
+//
+// The two ways this fails are answered with different status codes on purpose.
+// They used to share one err variable and both came back as 403, so "this node
+// no longer exists" and "the head could not build a config" were
+// indistinguishable -- and the node logged only the status code, which made a
+// mesh-wide outage look like an auth problem. 401 is the only one a node may
+// react to by re-joining.
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	id, key := r.URL.Query().Get("id"), r.URL.Query().Get("key")
 	var (
-		cfg   []byte
-		hosts string
-		plan  relayPlan
-		err   error
+		cfg     []byte
+		hosts   string
+		plan    relayPlan
+		authErr error
+		genErr  error
 	)
 	s.store.Write(func(st *model.State) error {
 		n := st.NodeByID(id)
 		if n == nil || subtle.ConstantTimeCompare([]byte(n.Key), []byte(key)) != 1 {
-			err = fmt.Errorf("unauthorized")
-			return err
+			authErr = fmt.Errorf("unknown node id or wrong key")
+			return authErr // nothing to persist
 		}
 		n.LastSeen = time.Now()
-		cfg, err = sb.Generate(st, n)
+		if cfg, genErr = sb.Generate(st, n); genErr != nil {
+			return nil // keep LastSeen: the node did reach us
+		}
 		hosts = sb.Hosts(st)
 		plan = buildPlan(st, n)
 		return nil
 	})
-	if err != nil {
-		httpErr(w, 403, err.Error())
+	if authErr != nil {
+		httpErr(w, 401, authErr.Error())
+		return
+	}
+	if genErr != nil {
+		// Someone's node record is unusable -- most often a relay with a
+		// malformed endpoint or missing Reality material. Report it as ours,
+		// because it is: the node asking has nothing to fix.
+		httpErr(w, 500, fmt.Sprintf("cannot build config: %v", genErr))
 		return
 	}
 	planJSON, _ := json.Marshal(plan)

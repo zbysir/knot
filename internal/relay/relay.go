@@ -329,6 +329,18 @@ func (c *Client) Open(relayID, dstNode, dstAddr string) (net.Conn, error) {
 	return st, nil
 }
 
+// Close tears down the session to relayID, if any. Cancelling a Maintain
+// context does not do this on its own: the context only governs the dial, and
+// the loop is otherwise parked in AcceptStream on a live connection.
+func (c *Client) Close(relayID string) {
+	c.mu.RLock()
+	s := c.sess[relayID]
+	c.mu.RUnlock()
+	if s != nil {
+		s.Close()
+	}
+}
+
 // Up reports whether the session to relayID is usable, so callers can fail
 // over to the next path without paying a dial timeout first.
 func (c *Client) Up(relayID string) bool {
