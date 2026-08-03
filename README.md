@@ -135,8 +135,9 @@ take a node's data plane away. The three parts of a response — sing-box config
 `/etc/hosts` block, relay plan — are compared and applied independently, so a
 change costs only what it actually touches: a node joining updates every relay's
 peer map without disturbing a single session. A sing-box config that really did
-change is delivered by SIGHUP, and the child is supervised independently of the
-head. Peer names are kept in `/etc/hosts`.
+change replaces the child process, waiting for the old one to be reaped first,
+and the child is supervised independently of the head. Peer names are kept in
+`/etc/hosts`.
 
 Plus the web panel: node table, routing matrix, tokens.
 
@@ -364,10 +365,14 @@ openssl s_client -connect HOST:443 -servername HOST -tls1_3 </dev/null |
   the relay plan are compared byte by byte and applied independently, so
   **adding a node disturbs neither sing-box nor any relay session** on the nodes
   that were already there
-- A sing-box config that did change is delivered with SIGHUP, which sing-box
-  answers by closing its instance and rebuilding it in the same process. Live
-  connections through the node are still dropped, but killing and re-execing
-  raced on the tun device, and losing that race left the node with no data plane
+- A sing-box config that did change replaces the process, and the stop **waits
+  for the old child to be reaped** before the new one starts. Signals are
+  asynchronous and the tun device stays open until the kernel has finished with
+  the process, so starting the replacement early killed it with
+  `TUNSETIFF: device or resource busy`. Not SIGHUP: sing-box supports it, but
+  `instance.Close()` does not fully release a tun inbound, so the in-process
+  rebuild hits the same error and the SIGHUP path discards the close error and
+  exits — a config change that kills sing-box rather than reloading it
 - sing-box is supervised independently of the head, so a child that dies is
   restarted even while the head is unreachable — on a relay the head is reached
   *through* that child, so nothing else could have noticed

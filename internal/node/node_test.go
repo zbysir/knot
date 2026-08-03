@@ -5,8 +5,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
-	"time"
 )
 
 func freeAddr(t *testing.T) string {
@@ -88,15 +88,14 @@ func TestApplyPlanKeepsMachineryWhenOnlyPeersChange(t *testing.T) {
 	}
 }
 
-// fakeSingBox writes a stand-in that accepts `check` and survives SIGHUP, the
-// way the real one does.
+// fakeSingBox writes a stand-in that accepts `check` and otherwise just runs.
 func fakeSingBox(t *testing.T, dir string) string {
 	t.Helper()
 	bin := filepath.Join(dir, "fake-sing-box")
 	script := "#!/bin/sh\n" +
 		"case \"$1\" in\n" +
 		"  check) exit 0 ;;\n" +
-		"  run)   trap '' HUP; while :; do sleep 0.05; done ;;\n" +
+		"  run)   while :; do sleep 0.05; done ;;\n" +
 		"esac\n"
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -104,14 +103,16 @@ func fakeSingBox(t *testing.T, dir string) string {
 	return bin
 }
 
-// TestReloadKeepsTheSameProcess pins down the fix for the outage: a config
-// change must be delivered by SIGHUP, which sing-box answers by closing its
-// instance and only then rebuilding it from the file, in one process.
+// TestRestartWaitsForTheOldChild pins down the fix for the outage. The old code
+// sent SIGKILL and immediately re-execed; signals are asynchronous, so the new
+// process reached ioctl(TUNSETIFF, "knot0") while the old one still held it and
+// died at startup with "device or resource busy" -- on a relay, taking :443 and
+// the head behind it down.
 //
-// The old path killed the child and immediately re-execed. SIGKILL is
-// asynchronous, so the new process reached ioctl(TUNSETIFF, "knot0") while the
-// old one still held it and died with "device or resource busy".
-func TestReloadKeepsTheSameProcess(t *testing.T) {
+// The invariant: when a restart returns, the previous child must already be
+// reaped. Nothing weaker is enough, and SIGHUP is not a way around it (see
+// restartSingBox).
+func TestRestartWaitsForTheOldChild(t *testing.T) {
 	dir := t.TempDir()
 	a := &Agent{SingBox: fakeSingBox(t, dir), DataDir: dir, cfgPath: filepath.Join(dir, "singbox.json")}
 	if err := os.WriteFile(a.cfgPath, []byte("{}"), 0o600); err != nil {
@@ -123,23 +124,30 @@ func TestReloadKeepsTheSameProcess(t *testing.T) {
 	}
 	t.Cleanup(a.stopSingBox)
 
-	pid := a.cur.cmd.Process.Pid
-	if err := a.reloadSingBox(ctx); err != nil {
+	old := a.cur
+	oldPid := old.cmd.Process.Pid
+	if err := a.restartSingBox(ctx); err != nil {
 		t.Fatal(err)
 	}
-	// Give the signal time to land and, if it were mishandled, to kill it.
-	time.Sleep(200 * time.Millisecond)
-	if !a.singBoxAlive() {
-		t.Fatal("child did not survive the reload")
+	select {
+	case <-old.done:
+	default:
+		t.Fatal("the old child was still running when the replacement started: that is the tun race")
 	}
-	if got := a.cur.cmd.Process.Pid; got != pid {
-		t.Fatalf("reload replaced the process (pid %d -> %d): that is the tun race", pid, got)
+	if err := syscall.Kill(oldPid, 0); err == nil {
+		t.Errorf("pid %d still exists after the restart", oldPid)
+	}
+	if !a.singBoxAlive() {
+		t.Fatal("no live child after the restart")
+	}
+	if a.cur.cmd.Process.Pid == oldPid {
+		t.Fatal("restart did not actually replace the process")
 	}
 }
 
-// TestReloadStartsWhenTheChildIsGone covers the other half: after a crash there
-// is nothing to signal, so a reload has to start one.
-func TestReloadStartsWhenTheChildIsGone(t *testing.T) {
+// TestRestartStartsWhenTheChildIsGone covers the other half: after a crash there
+// is nothing to stop, so a restart has to just start one.
+func TestRestartStartsWhenTheChildIsGone(t *testing.T) {
 	dir := t.TempDir()
 	a := &Agent{SingBox: fakeSingBox(t, dir), DataDir: dir, cfgPath: filepath.Join(dir, "singbox.json")}
 	if err := os.WriteFile(a.cfgPath, []byte("{}"), 0o600); err != nil {
@@ -148,12 +156,12 @@ func TestReloadStartsWhenTheChildIsGone(t *testing.T) {
 	if a.singBoxAlive() {
 		t.Fatal("alive before anything was started")
 	}
-	if err := a.reloadSingBox(context.Background()); err != nil {
+	if err := a.restartSingBox(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(a.stopSingBox)
 	if !a.singBoxAlive() {
-		t.Fatal("reload did not start a child")
+		t.Fatal("restart did not start a child")
 	}
 }
 

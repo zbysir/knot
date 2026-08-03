@@ -103,7 +103,7 @@ func (a *Agent) Run(ctx context.Context) error {
 				}
 			}
 		}
-		if err := a.reloadSingBox(ctx); err != nil {
+		if err := a.restartSingBox(ctx); err != nil {
 			return fmt.Errorf("initial sync failed and cached config is unusable: %w", err)
 		}
 	}
@@ -291,7 +291,7 @@ func (a *Agent) sync(ctx context.Context) error {
 		}
 	}
 	if a.cfgDirty || !a.singBoxAlive() {
-		if err := a.reloadSingBox(ctx); err != nil {
+		if err := a.restartSingBox(ctx); err != nil {
 			return err
 		}
 		a.cfgDirty = false
@@ -368,35 +368,23 @@ func errorBody(resp *http.Response) string {
 	return "no message"
 }
 
-// reloadSingBox brings the running sing-box in line with the config on disk.
+// restartSingBox brings sing-box in line with the config on disk by replacing
+// the process. startLocked stops the old child and waits for it to be reaped
+// first, which is what keeps the two of them off the same tun device.
 //
-// SIGHUP rather than kill-and-restart. sing-box's run loop answers it by
-// closing the old instance and only then building a new one from the file, all
-// in one process (cmd/sing-box/cmd_run.go), so the tun device is provably
-// released before it is reopened. Killing and immediately re-execing raced:
-// SIGKILL is asynchronous, so the new process reached ioctl(TUNSETIFF, "knot0")
-// while the old one still held it and died at startup with "device or resource
-// busy" -- taking the relay's :443, and with it the head behind its Reality
-// fallback, down with it.
+// NOT SIGHUP, which sing-box does support: its run loop closes the instance and
+// rebuilds it from the config file without leaving the process
+// (cmd/sing-box/cmd_run.go). We shipped that and watched it fail in production.
+// instance.Close() does not fully release the tun inbound, the rebuild died on
+// ioctl(TUNSETIFF, "knot0") with "device or resource busy", and because the
+// SIGHUP branch discards the Close error it went ahead with the rebuild anyway
+// and then exited -- so a config change killed sing-box instead of reloading it.
+// The supervisor recovered in 68ms, but a deliberate replacement is better than
+// a crash plus a rescue.
 //
-// Live connections are still dropped: a reload closes every inbound and
-// outbound. This buys correctness, not seamlessness.
-func (a *Agent) reloadSingBox(ctx context.Context) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if c := a.aliveLocked(); c != nil {
-		// Check before signalling. sing-box checks too, but on a failed reload
-		// it logs one line to its own stderr and silently keeps the old config,
-		// so without this knot would report success while nothing changed.
-		if err := checkConfig(a.SingBox, a.cfgPath); err != nil {
-			return err
-		}
-		if err := c.cmd.Process.Signal(syscall.SIGHUP); err != nil {
-			return fmt.Errorf("reload sing-box: %w", err)
-		}
-		return nil
-	}
-	return a.startLocked(ctx)
+// Live connections are dropped either way; nothing here can avoid that.
+func (a *Agent) restartSingBox(ctx context.Context) error {
+	return a.startSingBox(ctx)
 }
 
 func (a *Agent) startSingBox(ctx context.Context) error {
@@ -446,14 +434,29 @@ func (a *Agent) stopSingBox() {
 	a.stopLocked()
 }
 
-// stopLocked kills the child and waits for it to be reaped. The wait is the
-// whole point -- see reloadSingBox.
+// stopLocked ends the child and waits for it to be reaped.
+//
+// The wait is the whole point. Signals are asynchronous, and the tun device
+// stays open until the kernel has finished tearing the process down -- start the
+// replacement before that and it dies on ioctl(TUNSETIFF, "knot0") with "device
+// or resource busy". On a relay that means losing :443, and with it the head
+// behind the Reality fallback.
+//
+// SIGTERM first so sing-box closes its own inbounds; SIGKILL only if it will not
+// go.
 func (a *Agent) stopLocked() {
 	c := a.cur
 	a.cur = nil
 	if c == nil {
 		return
 	}
+	c.cmd.Process.Signal(syscall.SIGTERM)
+	select {
+	case <-c.done:
+		return
+	case <-time.After(5 * time.Second):
+	}
+	fmt.Fprintln(os.Stderr, "knot: sing-box ignored SIGTERM, killing it")
 	c.cmd.Process.Kill()
 	select {
 	case <-c.done:

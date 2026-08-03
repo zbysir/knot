@@ -119,8 +119,8 @@ node key 集中生成，按需下发。包括一个不读 sing-box 源码根本�
 `sing-box check`，所以坏配置永远不会让节点失去数据面。响应里的三样东西 ——
 sing-box 配置、`/etc/hosts` 块、中继计划 —— 分别比对分别应用，所以一次变更只付
 它真正动到的代价：新节点加入会更新每个中继的对端表，但不打断任何一条会话。
-sing-box 配置真变了才 reload，用 SIGHUP；子进程的存活由独立的守护逻辑负责，
-不依赖 head。对端名字维护在 `/etc/hosts` 里。
+sing-box 配置真变了才换进程，而且**先等旧进程被回收**再起新的；子进程的存活由
+独立的守护逻辑负责，不依赖 head。对端名字维护在 `/etc/hosts` 里。
 
 外加 Web 面板：节点表、路由矩阵、令牌。
 
@@ -327,9 +327,11 @@ openssl s_client -connect HOST:443 -servername HOST -tls1_3 </dev/null |
 
 - 节点每 30 秒拉一次配置；sing-box 配置、`/etc/hosts` 块、中继计划三样分别按
   字节比对、分别应用，所以**加一个节点既不动 sing-box 也不断任何中继会话**
-- sing-box 配置真变了才 reload，用 SIGHUP —— sing-box 会关掉旧实例再在同一个
-  进程里重建。穿过这个节点的连接照样会断，但先杀后起会跟 tun 设备抢资源，
-  抢输一次就等于这个节点彻底没有数据面
+- sing-box 配置真变了才换进程，而且**先等旧进程被回收**再起新的。信号是异步的，
+  tun 设备要到内核把进程彻底拆完才释放，早一步起新进程就会被
+  `TUNSETIFF: device or resource busy` 打死。**不用 SIGHUP**：sing-box 支持它，
+  但 `instance.Close()` 释放不干净 tun inbound，同进程重建撞同一个错误，
+  而 SIGHUP 分支会丢掉 Close 的错误直接退出 —— 等于一次配置变更把 sing-box 弄死
 - sing-box 的存活由独立的守护逻辑负责，head 不可达时子进程死了照样能拉起来 ——
   中继上的 head 是**穿过**这个子进程访问的，没有别的东西能发现它死了
 - 新配置先经 `sing-box check` 校验才替换，坏配置不会让节点失去数据面
