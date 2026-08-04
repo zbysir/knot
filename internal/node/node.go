@@ -38,8 +38,9 @@ type Agent struct {
 	Name     string
 	Endpoint string // set on relays: the host:port peers dial
 	DataDir  string
-	SingBox  string // path to the sing-box binary
-	Insecure bool   // skip TLS verification against the head
+	SingBox  string        // path to the sing-box binary
+	Insecure bool          // skip TLS verification against the head
+	Poll     time.Duration // config poll interval; defaults to DefaultPoll
 
 	id       Identity
 	etag     string
@@ -68,6 +69,30 @@ type Agent struct {
 type child struct {
 	cmd  *exec.Cmd
 	done chan struct{}
+}
+
+// DefaultPoll is how often a node asks the head for its config.
+//
+// Two seconds, not the 30 it used to be. Everything that follows a change to the
+// mesh is gated on this: a relay cannot accept a node that joined after its last
+// poll, so with a 30s interval a new node spent up to half a minute being
+// rejected by the relay with nothing in either log to say why. The cost is one
+// conditional GET per node per 2s, answered by a 304 that touches no disk.
+const DefaultPoll = 2 * time.Second
+
+// MinPoll keeps a mistaken KNOT_POLL from turning every node into a spin loop
+// against the head.
+const MinPoll = time.Second
+
+func (a *Agent) poll() time.Duration {
+	switch {
+	case a.Poll <= 0:
+		return DefaultPoll
+	case a.Poll < MinPoll:
+		return MinPoll
+	default:
+		return a.Poll
+	}
 }
 
 // logTime matches the date and time sing-box prints, so the two halves of a
@@ -210,7 +235,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	// have noticed. One lost tun race then means a permanent outage.
 	go a.superviseSingBox(ctx)
 
-	t := time.NewTicker(30 * time.Second)
+	t := time.NewTicker(a.poll())
 	defer t.Stop()
 	for {
 		select {
@@ -266,7 +291,7 @@ func (a *Agent) superviseSingBox(ctx context.Context) {
 
 // load reads the persisted identity, joining the head if this is a first run.
 func (a *Agent) load() error {
-	p := filepath.Join(a.DataDir, "identity.json")
+	p := a.identityPath()
 	if b, err := os.ReadFile(p); err == nil {
 		if err := json.Unmarshal(b, &a.id); err == nil && a.id.NodeID != "" {
 			// KNOT_HEAD wins over the address recorded at join time. Without
@@ -286,25 +311,62 @@ func (a *Agent) load() error {
 	if a.Token == "" {
 		return fmt.Errorf("no identity on disk and no KNOT_TOKEN given")
 	}
+	id, err := a.join()
+	if err != nil {
+		return err
+	}
+	return a.saveIdentity(id)
+}
+
+func (a *Agent) identityPath() string { return filepath.Join(a.DataDir, "identity.json") }
+
+// headURL is where the head is, in priority order.
+//
+// KNOT_HEAD first and the identity second, never the other way round: the
+// identity can be empty or half-written, and deriving the URL from it produced
+// requests to `/api/config?id=&key=` -- "unsupported protocol scheme" -- with no
+// way back.
+func (a *Agent) headURL() string {
+	if a.Head != "" {
+		return a.Head
+	}
+	return a.id.Head
+}
+
+// join enrols with the head and returns the identity it hands back, touching
+// neither the Agent nor the disk. The caller decides whether to keep it, which
+// is what lets a re-join that fails leave a working node exactly as it was.
+func (a *Agent) join() (Identity, error) {
 	body, _ := json.Marshal(map[string]string{
 		"token": a.Token, "name": a.Name, "endpoint": a.Endpoint,
 	})
-	resp, err := a.client().Post(a.Head+"/api/join", "application/json", bytes.NewReader(body))
+	resp, err := a.client().Post(a.headURL()+"/api/join", "application/json", bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("join: %w", err)
+		return Identity{}, fmt.Errorf("join: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		var e map[string]string
-		json.NewDecoder(resp.Body).Decode(&e)
-		return fmt.Errorf("join rejected: %s", e["error"])
+		return Identity{}, fmt.Errorf("join rejected: %s", errorBody(resp))
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&a.id); err != nil {
+	var id Identity
+	if err := json.NewDecoder(resp.Body).Decode(&id); err != nil {
+		return Identity{}, err
+	}
+	if id.NodeID == "" {
+		return Identity{}, fmt.Errorf("join returned no node id")
+	}
+	id.Head, id.Name = a.headURL(), a.Name
+	return id, nil
+}
+
+// saveIdentity persists an identity and adopts it, in that order.
+func (a *Agent) saveIdentity(id Identity) error {
+	b, _ := json.MarshalIndent(id, "", "  ")
+	if err := os.WriteFile(a.identityPath(), b, 0o600); err != nil {
 		return err
 	}
-	a.id.Head, a.id.Name = a.Head, a.Name
-	b, _ := json.MarshalIndent(a.id, "", "  ")
-	return os.WriteFile(p, b, 0o600)
+	a.id = id
+	return nil
 }
 
 type configResp struct {
@@ -323,7 +385,7 @@ type configResp struct {
 // sing-box. Comparing the parts byte by byte means a change only costs what it
 // actually touches.
 func (a *Agent) sync(ctx context.Context) error {
-	url := fmt.Sprintf("%s/api/config?id=%s&key=%s", a.id.Head, a.id.NodeID, a.id.Key)
+	url := fmt.Sprintf("%s/api/config?id=%s&key=%s", a.headURL(), a.id.NodeID, a.id.Key)
 	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if a.etag != "" {
 		req.Header.Set("If-None-Match", a.etag)
@@ -399,40 +461,48 @@ func (a *Agent) sync(ctx context.Context) error {
 	return nil
 }
 
-// reenroll handles the head saying it does not know this identity, which
-// happens when the node was deleted from the panel or the head's state file was
-// replaced.
+// reenroll handles the head saying it does not know this identity, which happens
+// when the node was deleted from the panel or the head's state file was replaced.
 //
-// This used to be terminal in a way that was hard to see: load() returns as
-// soon as identity.json has a node ID, so KNOT_TOKEN was never consulted again.
-// The node polled forever, the relay rejected its Hello because its ID was not
-// in PeerKeys, and the relay's Reality inbound logged "unknown UUID" for it --
-// three unrelated-looking symptoms of one dead credential.
+// This used to be terminal in a way that was hard to see: load() returns as soon
+// as identity.json has a node ID, so KNOT_TOKEN was never consulted again. The
+// node polled forever, the relay rejected its Hello because its ID was not in
+// PeerKeys, and the relay's Reality inbound logged "unknown UUID" for it -- three
+// unrelated-looking symptoms of one dead credential.
+//
+// Nothing is thrown away until the head has handed over a new identity. The first
+// version of this deleted identity.json and zeroed the in-memory copy up front,
+// so a re-join that failed -- a consumed one-shot token, the usual case -- left
+// the node with no identity AND no head URL, and every later poll went to
+// `/api/config?id=&key=` with "unsupported protocol scheme". Permanently: there
+// is no path back from that without re-creating the container.
 func (a *Agent) reenroll(ctx context.Context, reason string) error {
 	if a.Token == "" {
 		return fmt.Errorf("head rejected our identity (%s) and no KNOT_TOKEN is set to re-join with", reason)
 	}
-	// Re-joining uses a token and, if the name is gone from the head, allocates
-	// a new VIP. Do not do that on a loop: if the head still rejects a freshly
-	// issued identity, something else is wrong and hammering it hides that.
+	// Re-joining spends a token and, if the name is gone from the head, takes a
+	// new VIP. Do not do that on a loop: if the head still rejects us, something
+	// else is wrong and hammering it hides that.
 	if !a.lastRejoin.IsZero() && time.Since(a.lastRejoin) < 5*time.Minute {
-		return fmt.Errorf("head still rejects our identity (%s) %s after re-joining",
+		return fmt.Errorf("head rejected our identity (%s); last re-join attempt was %s ago",
 			reason, time.Since(a.lastRejoin).Truncate(time.Second))
 	}
 	logf("head rejected our identity (%s); re-joining with KNOT_TOKEN", reason)
-	if err := os.Remove(filepath.Join(a.DataDir, "identity.json")); err != nil && !os.IsNotExist(err) {
-		return err
-	}
 	a.lastRejoin = time.Now()
-	a.id, a.etag = Identity{}, ""
-	if err := a.load(); err != nil {
+	id, err := a.join()
+	if err != nil {
+		// Identity, config and data plane are all untouched; we keep polling and
+		// keep saying so until someone issues a usable token.
 		return fmt.Errorf("re-join: %w", err)
 	}
+	if err := a.saveIdentity(id); err != nil {
+		return err
+	}
+	a.etag = ""
 	logf("re-joined as %s (vip %s)", a.id.NodeID, a.id.VIP)
-	// Pull the config for the new identity now rather than waiting 30s: on a
-	// cold start this is the first sync, so nothing has been applied yet. This
-	// recurses at most once -- a second rejection hits the lastRejoin guard
-	// above and comes back as an error.
+	// Pull the config for the new identity now rather than waiting for the next
+	// tick: on a cold start this is the first sync, so nothing has been applied
+	// yet. This recurses at most once -- a second rejection hits the guard above.
 	return a.sync(ctx)
 }
 

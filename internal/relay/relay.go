@@ -244,15 +244,38 @@ func (c *Client) logf(f string, v ...any) {
 	}
 }
 
+// rejectedWithin is how quickly a session has to die after our Hello for the
+// cause to be an auth rejection rather than a network problem. The server answers
+// a failed Auth by closing without a word -- the protocol has no Hello reply --
+// so this is the only signal there is.
+const rejectedWithin = 3 * time.Second
+
+// rejectedRetryCap bounds the wait after a rejection. The cause is almost always
+// a relay that has not polled the head yet, which fixes itself in seconds.
+const rejectedRetryCap = 5 * time.Second
+
 // Maintain keeps a session to relayID alive until ctx is done.
 func (c *Client) Maintain(ctx context.Context, relayID string) {
 	backoff := time.Second
 	for ctx.Err() == nil {
-		err := c.once(ctx, relayID)
+		start := time.Now()
+		up, err := c.once(ctx, relayID)
 		if ctx.Err() != nil {
 			return
 		}
-		if err != nil {
+		switch {
+		case err == nil:
+		case up && time.Since(start) < rejectedWithin:
+			// "session up" followed instantly by EOF read as a mystery twice
+			// before this line existed, and both times the answer was the same.
+			c.logf("relay: %s rejected our key -- it learns about new nodes on its next poll of the head; if this repeats, this node is no longer in the mesh (retry in %s)",
+				c.name(relayID), backoff)
+			// A rejection resolves on the relay's poll interval, so the usual
+			// doubling only delays the recovery it is waiting for.
+			if backoff > rejectedRetryCap {
+				backoff = rejectedRetryCap
+			}
+		default:
 			c.logf("relay: session to %s ended: %v (retry in %s)", c.name(relayID), err, backoff)
 		}
 		select {
@@ -268,29 +291,35 @@ func (c *Client) Maintain(ctx context.Context, relayID string) {
 	}
 }
 
-func (c *Client) once(ctx context.Context, relayID string) error {
+// once holds one session open until it breaks. The bool reports whether the
+// session was ever established, which is what separates "cannot reach the relay"
+// from "the relay hung up on us".
+func (c *Client) once(ctx context.Context, relayID string) (bool, error) {
 	conn, err := c.Dial(ctx, relayID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer conn.Close()
 	if err := WriteHello(conn, Hello{NodeID: c.NodeID, Key: c.Key}); err != nil {
-		return err
+		return false, err
 	}
 	sess, err := yamux.Client(conn, muxConfig())
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer sess.Close()
 
 	c.setSession(relayID, sess)
 	defer c.setSession(relayID, nil)
+	// Optimistic on purpose: the relay sends nothing back on success, so this is
+	// as much confirmation as exists. Maintain reinterprets it if the session
+	// dies straight away.
 	c.logf("relay: session to %s up", c.name(relayID))
 
 	for {
 		st, err := sess.AcceptStream()
 		if err != nil {
-			return err
+			return true, err
 		}
 		go c.serveInbound(st)
 	}

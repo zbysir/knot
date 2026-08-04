@@ -124,6 +124,22 @@ func (s *Store) Write(fn func(*State) error) error {
 	return s.flush()
 }
 
+// WriteVolatile mutates the state WITHOUT persisting it.
+//
+// For fields that change on every request and are not worth a file rewrite --
+// LastSeen, which every node stamps at its poll interval. Persisting that made
+// the whole state file a write-per-poll: at a 2s interval and a handful of nodes
+// it is a rewrite every 500ms, for a value nothing depends on.
+//
+// The cost is that LastSeen resets when the head restarts. Nodes stamp it again
+// within one poll interval, which is fresher than anything a flush would have
+// preserved.
+func (s *Store) WriteVolatile(fn func(*State)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fn(s.st)
+}
+
 func (s *Store) flush() error {
 	b, err := json.MarshalIndent(s.st, "", "  ")
 	if err != nil {

@@ -361,7 +361,7 @@ openssl s_client -connect HOST:443 -servername HOST -tls1_3 </dev/null |
 
 ## Runtime behaviour
 
-- Nodes poll config every 30s; the sing-box config, the `/etc/hosts` block and
+- Nodes poll config every **2s** (`KNOT_POLL`); the sing-box config, the `/etc/hosts` block and
   the relay plan are compared byte by byte and applied independently, so
   **adding a node disturbs neither sing-box nor any relay session** on the nodes
   that were already there
@@ -380,6 +380,11 @@ openssl s_client -connect HOST:443 -servername HOST -tls1_3 </dev/null |
   bad config can never leave a node without a data plane
 - If the head says it does not know this node (401), the agent re-joins with
   `KNOT_TOKEN` instead of polling a dead credential forever
+- Everything that follows a mesh change is gated on the poll interval: a relay
+  cannot accept a node that joined after its last poll. At 30s that meant a new
+  node spent up to half a minute being rejected, so the interval is 2s and a poll
+  costs one conditional GET answered by a 304. `LastSeen` is deliberately not
+  persisted — stamping it on every poll used to rewrite the whole state file
 - knot's own log lines carry a timestamp in sing-box's format, and sing-box's
   colour escapes are stripped, so one `docker logs` reads as one log
 - Reality answers every unauthenticated connection to `:443` with

@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -166,6 +169,96 @@ func TestRestartStartsWhenTheChildIsGone(t *testing.T) {
 	t.Cleanup(a.stopSingBox)
 	if !a.singBoxAlive() {
 		t.Fatal("restart did not start a child")
+	}
+}
+
+// TestFailedReJoinKeepsTheNodeUsable is the regression test for a node bricking
+// itself. reenroll used to delete identity.json and zero the in-memory copy
+// before attempting the join, so a rejected token (a consumed one-shot, the usual
+// case) left the agent with no identity and no head URL. Every later poll then
+// went to `/api/config?id=&key=` and failed with "unsupported protocol scheme",
+// forever -- the only way out was re-creating the container.
+func TestFailedReJoinKeepsTheNodeUsable(t *testing.T) {
+	var joins int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/config": // the node was deleted from the panel
+			w.WriteHeader(401)
+			io.WriteString(w, `{"error":"unknown node id or wrong key"}`)
+		case "/api/join": // ... and its one-shot token is long gone
+			joins++
+			w.WriteHeader(403)
+			io.WriteString(w, `{"error":"invalid or expired token"}`)
+		}
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	idPath := filepath.Join(dir, "identity.json")
+	before := `{"node_id":"abc","key":"k","vip":"10.88.0.9","head":"` + srv.URL + `","name":"n"}`
+	if err := os.WriteFile(idPath, []byte(before), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &Agent{Head: srv.URL, Token: "consumed", Name: "n", DataDir: dir}
+	if err := a.load(); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.sync(context.Background()); err == nil {
+		t.Fatal("a failed re-join must be reported")
+	}
+	if joins != 1 {
+		t.Fatalf("join attempts = %d, want 1", joins)
+	}
+
+	// Nothing may have been thrown away: polling is the only way back.
+	if _, err := os.Stat(idPath); err != nil {
+		t.Error("identity.json was deleted for a re-join that never succeeded")
+	}
+	if a.id.NodeID != "abc" || a.id.Key != "k" {
+		t.Errorf("in-memory identity was wiped: %+v", a.id)
+	}
+	if err := a.sync(context.Background()); err == nil ||
+		strings.Contains(err.Error(), "unsupported protocol scheme") {
+		t.Errorf("the next poll no longer reaches the head: %v", err)
+	}
+}
+
+// TestReJoinAdoptsTheNewIdentity is the other half: when the token does work, the
+// new identity has to land on disk and in memory.
+func TestReJoinAdoptsTheNewIdentity(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/config":
+			w.WriteHeader(401)
+			io.WriteString(w, `{"error":"unknown node id or wrong key"}`)
+		case "/api/join":
+			io.WriteString(w, `{"node_id":"new1","key":"k2","vip":"10.88.0.4"}`)
+		}
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "identity.json"),
+		[]byte(`{"node_id":"old","key":"k","vip":"10.88.0.9","head":"`+srv.URL+`","name":"n"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := &Agent{Head: srv.URL, Token: "good", Name: "n", DataDir: dir}
+	if err := a.load(); err != nil {
+		t.Fatal(err)
+	}
+	// The re-join succeeds and then re-syncs, which 401s again against this stub
+	// (it does not know the new identity either) -- so an error is expected. What
+	// matters is that the new identity was adopted.
+	a.sync(context.Background())
+	if a.id.NodeID != "new1" || a.id.VIP != "10.88.0.4" {
+		t.Fatalf("identity not adopted: %+v", a.id)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "identity.json"))
+	if err != nil || !strings.Contains(string(b), "new1") {
+		t.Fatalf("new identity not persisted: %s %v", b, err)
 	}
 }
 

@@ -63,6 +63,7 @@ const usage = `knot -- mesh networking with a Reality data plane
       KNOT_ENDPOINT      host:port peers dial -- set this to make it a relay
       KNOT_DATA          state directory                   (default /var/lib/knot)
       KNOT_SINGBOX       sing-box binary path              (default sing-box)
+      KNOT_POLL          config poll interval              (default 2s, min 1s)
 
   knot passwd <password> set the panel password (only while head is stopped;
                          prefer KNOT_PASSWORD on the head instead)
@@ -131,6 +132,13 @@ func runNode() error {
 		Endpoint: os.Getenv("KNOT_ENDPOINT"),
 		DataDir:  env("KNOT_DATA", "/var/lib/knot"),
 		SingBox:  env("KNOT_SINGBOX", "sing-box"),
+	}
+	if v := os.Getenv("KNOT_POLL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("KNOT_POLL %q: %w", v, err)
+		}
+		a.Poll = d
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { waitSignal(); cancel() }()

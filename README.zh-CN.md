@@ -325,7 +325,7 @@ openssl s_client -connect HOST:443 -servername HOST -tls1_3 </dev/null |
 
 ## 运行时行为
 
-- 节点每 30 秒拉一次配置；sing-box 配置、`/etc/hosts` 块、中继计划三样分别按
+- 节点每 **2 秒**拉一次配置（`KNOT_POLL`）；sing-box 配置、`/etc/hosts` 块、中继计划三样分别按
   字节比对、分别应用，所以**加一个节点既不动 sing-box 也不断任何中继会话**
 - sing-box 配置真变了才换进程，而且**先等旧进程被回收**再起新的。信号是异步的，
   tun 设备要到内核把进程彻底拆完才释放，早一步起新进程就会被
@@ -337,6 +337,10 @@ openssl s_client -connect HOST:443 -servername HOST -tls1_3 </dev/null |
 - 新配置先经 `sing-box check` 校验才替换，坏配置不会让节点失去数据面
 - head 说不认识这个节点（401）时，agent 会用 `KNOT_TOKEN` 重新接入，
   而不是拿着一个已经失效的凭证一直轮询
+- mesh 变更之后的一切都卡在轮询间隔上：中继没轮询到就不可能接受一个新节点。
+  30 秒的时候意味着新节点要被中继拒绝最多半分钟，所以间隔是 2 秒 —— 一次轮询就是
+  一个条件 GET，命中 304 不碰磁盘。`LastSeen` 故意不落盘：每次轮询都盖一次时间戳，
+  以前等于把整个 state 文件重写一遍
 - knot 自己的日志带时间戳（和 sing-box 同格式），并且剥掉 sing-box 的颜色转义，
   所以一次 `docker logs` 读起来是一份日志而不是两份
 - Reality 对每个未认证的 `:443` 连接都回 `processed invalid connection`，级别是

@@ -199,19 +199,21 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		authErr error
 		genErr  error
 	)
-	s.store.Write(func(st *model.State) error {
+	// Volatile: the only mutation here is LastSeen, and nodes poll every couple
+	// of seconds. Persisting on each one turned every poll into a full rewrite of
+	// the state file.
+	s.store.WriteVolatile(func(st *model.State) {
 		n := st.NodeByID(id)
 		if n == nil || subtle.ConstantTimeCompare([]byte(n.Key), []byte(key)) != 1 {
 			authErr = fmt.Errorf("unknown node id or wrong key")
-			return authErr // nothing to persist
+			return
 		}
 		n.LastSeen = time.Now()
 		if cfg, genErr = sb.Generate(st, n); genErr != nil {
-			return nil // keep LastSeen: the node did reach us
+			return
 		}
 		hosts = sb.Hosts(st)
 		plan = buildPlan(st, n)
-		return nil
 	})
 	if authErr != nil {
 		httpErr(w, 401, authErr.Error())
