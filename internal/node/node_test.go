@@ -169,6 +169,44 @@ func TestRestartStartsWhenTheChildIsGone(t *testing.T) {
 	}
 }
 
+// TestPlanNamesReachTheLogs: the wire protocol only carries node IDs, so
+// without the head's name map every log line about a peer is a hex string
+// nobody can place -- "relay: node bcd537f766865c69 online".
+func TestPlanNamesReachTheLogs(t *testing.T) {
+	a := &Agent{}
+	t.Cleanup(a.stopRelay)
+	p := Plan{
+		SelfID:  "self",
+		Key:     "selfkey",
+		Socks:   freeAddr(t),
+		Uplinks: []string{"10.88.0.1:9997"},
+		Peers:   []PlanPeer{{NodeID: "bcd537f766865c69", VIP: "10.88.0.2"}},
+		Names: map[string]string{
+			"bcd537f766865c69": "yy-hz", // by node ID, as a relay sees it
+			"10.88.0.1:9997":   "yy-hk", // by address, as a leaf sees it
+		},
+	}
+	if err := a.applyPlan(p); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.relay.nameOf("bcd537f766865c69"); got != "yy-hz" {
+		t.Errorf("nameOf(id) = %q, want yy-hz", got)
+	}
+	if got := a.relay.nameOf("10.88.0.1:9997"); got != "yy-hk" {
+		t.Errorf("nameOf(addr) = %q, want yy-hk", got)
+	}
+	if got := a.relay.nameByVIP("10.88.0.2"); got != "yy-hz" {
+		t.Errorf("nameByVIP = %q, want yy-hz", got)
+	}
+	// A plan cached by an older node carries no names at all, and every lookup
+	// has to fall back to the key rather than print an empty string.
+	p.Names = nil
+	a.relay.setPlan(p)
+	if got := a.relay.nameOf("bcd537f766865c69"); got != "bcd537f766865c69" {
+		t.Errorf("without names, nameOf = %q, want the id back", got)
+	}
+}
+
 // TestLogLinesAreTimestamped: knot's own lines are read interleaved with
 // sing-box's dated ones, and an undated line cannot be correlated with the
 // sing-box error that explains it.

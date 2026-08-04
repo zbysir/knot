@@ -26,6 +26,10 @@ type Plan struct {
 	Peers   []PlanPeer `json:"peers"`
 	// PeerKeys maps node ID -> sha256(key). Relays only.
 	PeerKeys map[string]string `json:"peer_keys,omitempty"`
+	// Names maps node ID -> name AND relay address -> name, for the logs. A plan
+	// cached by an older node has none, and every lookup then falls back to the
+	// key it was given.
+	Names map[string]string `json:"names,omitempty"`
 }
 
 // PlanPeer says how to reach one peer that cannot be dialled directly.
@@ -99,8 +103,10 @@ func (a *Agent) startRelay(p Plan) error {
 	// Reality wrapping already happened in sing-box before we see the bytes.
 	if p.IsRelay && p.Listen != "" {
 		r.reg = relay.NewRegistry()
+		r.reg.NameOf = r.nameOf
 		srv := &relay.Server{
-			Reg: r.reg,
+			Reg:    r.reg,
+			NameOf: r.nameOf,
 			// The head issues each node's key and tells the relay the hashes.
 			// Accepting any non-empty key would let anyone who reaches this
 			// port register as any node. Read through peerKey rather than
@@ -121,6 +127,7 @@ func (a *Agent) startRelay(p Plan) error {
 		NodeID: p.SelfID,
 		Key:    p.Key,
 		Logf:   logf,
+		NameOf: r.nameOf,
 		Dial: func(ctx context.Context, addr string) (net.Conn, error) {
 			// addr is the relay's mesh address; sing-box turns this into a
 			// Reality connection on the way out.
@@ -142,6 +149,25 @@ func (a *Agent) startRelay(p Plan) error {
 	}
 	a.relay = r
 	return nil
+}
+
+// nameByVIP names a mesh address for the logs.
+func (r *relayd) nameByVIP(vip string) string {
+	if p := r.peerByVIP(vip); p != nil {
+		return r.nameOf(p.NodeID)
+	}
+	return vip
+}
+
+// nameOf turns a node ID or a relay address into the name the panel shows,
+// falling back to the key itself so callers can use the result unconditionally.
+func (r *relayd) nameOf(key string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if n := r.plan.Names[key]; n != "" {
+		return n
+	}
+	return key
 }
 
 func (r *relayd) setPlan(p Plan) {
@@ -276,7 +302,7 @@ func (r *relayd) handleSocks(c net.Conn) {
 	// the peer as up when nothing can actually get through.
 	conn, err := r.dialPeer(host, port)
 	if err != nil {
-		logf("relay: %s:%d unreachable: %v", host, port, err)
+		logf("relay: %s (%s:%d) unreachable: %v", r.nameByVIP(host), host, port, err)
 		socksReply(c, socksHostUnreachable)
 		return
 	}

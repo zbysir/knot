@@ -15,8 +15,25 @@ import (
 
 // Registry maps node IDs to their live sessions. Only relays keep one.
 type Registry struct {
+	// NameOf, when set, turns a node ID into the name the panel shows. Optional
+	// and log/error decoration only.
+	NameOf func(string) string
+
 	mu sync.RWMutex
 	m  map[string]*yamux.Session
+}
+
+func (r *Registry) name(id string) string { return decorate(r.NameOf, id) }
+
+// decorate is the shared fallback: without a NameOf, or for an ID nobody has a
+// name for, the key itself is still the best thing to print.
+func decorate(f func(string) string, id string) string {
+	if f != nil {
+		if n := f(id); n != "" {
+			return n
+		}
+	}
+	return id
 }
 
 func NewRegistry() *Registry { return &Registry{m: map[string]*yamux.Session{}} }
@@ -52,7 +69,7 @@ func (r *Registry) get(id string) *yamux.Session {
 func (r *Registry) Dial(nodeID, dstAddr string) (net.Conn, error) {
 	sess := r.get(nodeID)
 	if sess == nil {
-		return nil, fmt.Errorf("relay: node %s not connected here", nodeID)
+		return nil, fmt.Errorf("relay: node %s not connected here", r.name(nodeID))
 	}
 	st, err := sess.OpenStream()
 	if err != nil {
@@ -100,7 +117,13 @@ type Server struct {
 	Auth func(nodeID, key string) bool
 	// Logf is optional.
 	Logf func(format string, v ...any)
+	// NameOf, when set, turns a node ID into the name the panel shows. The wire
+	// protocol only ever carries IDs, so without this every log line about a
+	// peer is a hex string nobody can place.
+	NameOf func(string) string
 }
+
+func (s *Server) name(id string) string { return decorate(s.NameOf, id) }
 
 func (s *Server) logf(f string, v ...any) {
 	if s.Logf != nil {
@@ -129,21 +152,21 @@ func (s *Server) handleConn(c net.Conn) {
 	}
 	c.SetReadDeadline(time.Time{})
 	if s.Auth != nil && !s.Auth(h.NodeID, h.Key) {
-		s.logf("relay: rejected node %s", h.NodeID)
+		s.logf("relay: rejected node %s", s.name(h.NodeID))
 		return
 	}
 
 	sess, err := yamux.Server(c, muxConfig())
 	if err != nil {
-		s.logf("relay: mux for %s: %v", h.NodeID, err)
+		s.logf("relay: mux for %s: %v", s.name(h.NodeID), err)
 		return
 	}
 	defer sess.Close()
 
 	s.Reg.put(h.NodeID, sess)
 	defer s.Reg.drop(h.NodeID, sess)
-	s.logf("relay: node %s online", h.NodeID)
-	defer s.logf("relay: node %s offline", h.NodeID)
+	s.logf("relay: node %s online", s.name(h.NodeID))
+	defer s.logf("relay: node %s offline", s.name(h.NodeID))
 
 	for {
 		st, err := sess.AcceptStream()
@@ -169,12 +192,12 @@ func (s *Server) handleStream(st *yamux.Stream) {
 		// The destination has no session here. Say so rather than hanging:
 		// the caller can then try its next path instead of waiting out a
 		// timeout.
-		WriteResult(st, fmt.Errorf("node %s not connected to this relay", o.DstNode))
+		WriteResult(st, fmt.Errorf("node %s not connected to this relay", s.name(o.DstNode)))
 		return
 	}
 	out, err := peer.OpenStream()
 	if err != nil {
-		WriteResult(st, fmt.Errorf("open stream to %s: %v", o.DstNode, err))
+		WriteResult(st, fmt.Errorf("open stream to %s: %v", s.name(o.DstNode), err))
 		return
 	}
 	defer out.Close()
@@ -206,10 +229,14 @@ type Client struct {
 	// through sing-box, so it is just a TCP dial to the relay's mesh address.
 	Dial func(ctx context.Context, relayID string) (net.Conn, error)
 	Logf func(format string, v ...any)
+	// NameOf, when set, names a relay address for the logs.
+	NameOf func(string) string
 
 	mu   sync.RWMutex
 	sess map[string]*yamux.Session // relayID -> session
 }
+
+func (c *Client) name(id string) string { return decorate(c.NameOf, id) }
 
 func (c *Client) logf(f string, v ...any) {
 	if c.Logf != nil {
@@ -226,7 +253,7 @@ func (c *Client) Maintain(ctx context.Context, relayID string) {
 			return
 		}
 		if err != nil {
-			c.logf("relay: session to %s ended: %v (retry in %s)", relayID, err, backoff)
+			c.logf("relay: session to %s ended: %v (retry in %s)", c.name(relayID), err, backoff)
 		}
 		select {
 		case <-ctx.Done():
@@ -258,7 +285,7 @@ func (c *Client) once(ctx context.Context, relayID string) error {
 
 	c.setSession(relayID, sess)
 	defer c.setSession(relayID, nil)
-	c.logf("relay: session to %s up", relayID)
+	c.logf("relay: session to %s up", c.name(relayID))
 
 	for {
 		st, err := sess.AcceptStream()
@@ -312,7 +339,7 @@ func (c *Client) Open(relayID, dstNode, dstAddr string) (net.Conn, error) {
 	sess := c.sess[relayID]
 	c.mu.RUnlock()
 	if sess == nil {
-		return nil, fmt.Errorf("relay: no session to %s", relayID)
+		return nil, fmt.Errorf("relay: no session to %s", c.name(relayID))
 	}
 	st, err := sess.OpenStream()
 	if err != nil {

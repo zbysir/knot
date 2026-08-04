@@ -250,6 +250,15 @@ type relayPlan struct {
 	// Hashes rather than the keys themselves so a readable relay state file
 	// does not hand over every node's credential.
 	PeerKeys map[string]string `json:"peer_keys,omitempty"`
+	// Names decorates the logs, nothing else. Keyed by BOTH node ID and relay
+	// address, because that is what the two sides have in hand: a relay knows
+	// the peer that said hello only by the ID in its Hello, and a leaf knows an
+	// uplink only by the address it dialled. The two key kinds cannot collide --
+	// an address always contains a colon, an ID never does.
+	//
+	// Without this the log says "relay: node bcd537f766865c69 online", and
+	// nobody can tell which machine that is.
+	Names map[string]string `json:"names,omitempty"`
 }
 
 type planPeer struct {
@@ -268,6 +277,12 @@ func buildPlan(st *model.State, self *model.Node) relayPlan {
 		Key:     self.Key,
 		IsRelay: self.IsRelay && self.Endpoint != "",
 		Socks:   fmt.Sprintf("127.0.0.1:%d", sb.SocksPort),
+	}
+	p.Names = map[string]string{}
+	for _, n := range st.Nodes {
+		if n.ID != self.ID && n.Name != "" {
+			p.Names[n.ID] = n.Name
+		}
 	}
 	if p.IsRelay {
 		// Bind to the mesh address, never 0.0.0.0. This port speaks a plain
@@ -292,7 +307,9 @@ func buildPlan(st *model.State, self *model.Node) relayPlan {
 			if r.ID == self.ID || r.Endpoint == "" {
 				continue
 			}
-			p.Uplinks = append(p.Uplinks, fmt.Sprintf("%s:%d", r.VIP, sb.RelayPort))
+			addr := fmt.Sprintf("%s:%d", r.VIP, sb.RelayPort)
+			p.Uplinks = append(p.Uplinks, addr)
+			p.Names[addr] = r.Name
 		}
 	}
 	for _, dst := range st.Nodes {
