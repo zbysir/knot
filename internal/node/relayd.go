@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -50,8 +49,6 @@ type relayd struct {
 	srv     net.Listener                  // rebound by listenAndServe, so guarded
 	uplinks map[string]context.CancelFunc // relay addr -> stop its Maintain loop
 }
-
-func logf(f string, v ...any) { fmt.Fprintf(os.Stderr, "knot: "+f+"\n", v...) }
 
 // applyPlan brings the relay machinery in line with a new plan, rebuilding only
 // what the change actually requires.

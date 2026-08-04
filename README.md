@@ -380,6 +380,14 @@ openssl s_client -connect HOST:443 -servername HOST -tls1_3 </dev/null |
   bad config can never leave a node without a data plane
 - If the head says it does not know this node (401), the agent re-joins with
   `KNOT_TOKEN` instead of polling a dead credential forever
+- knot's own log lines carry a timestamp in sing-box's format, and sing-box's
+  colour escapes are stripped, so one `docker logs` reads as one log
+- Reality answers every unauthenticated connection to `:443` with
+  `processed invalid connection`, at ERROR level, and a public relay is scanned
+  continuously — 53 distinct addresses in six minutes on ours. Those lines are
+  collapsed into one summary every 5 minutes. **Counted, not dropped:** many
+  addresses once each is the internet, one address over and over is a node of
+  yours whose cached Reality key went stale, and the summary names it
 - Relay sessions reconnect automatically with backoff capped at 60s — a relay
   that was down for an hour is picked back up within a minute
 - Before forwarding, knot checks whether the target relay's session is actually

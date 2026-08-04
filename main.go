@@ -134,7 +134,6 @@ func runNode() error {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { waitSignal(); cancel() }()
-	fmt.Printf("knot node %q -> %s\n", a.Name, a.Head)
 	return a.Run(ctx)
 }
 

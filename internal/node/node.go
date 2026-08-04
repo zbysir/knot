@@ -7,6 +7,7 @@
 package node
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -68,7 +70,98 @@ type child struct {
 	done chan struct{}
 }
 
+// logTime matches the date and time sing-box prints, so the two halves of a
+// container's log line up.
+const logTime = "2006-01-02 15:04:05"
+
+// logf writes one timestamped knot line to stderr.
+//
+// Timestamped because these lines are read interleaved with sing-box's, which
+// are -- and an undated "relay: session ended" next to a dated sing-box error is
+// impossible to correlate with the thing that caused it. Reading one relay
+// outage backwards was enough.
+func logf(format string, v ...any) { logTo(os.Stderr, format, v...) }
+
+func logTo(w io.Writer, format string, v ...any) {
+	fmt.Fprintf(w, "%s knot: %s\n", time.Now().Format(logTime), fmt.Sprintf(format, v...))
+}
+
+// ansi matches the colour escapes sing-box emits even when its output is a pipe.
+// Unreadable in `docker logs`, and they make every line grep-hostile.
+var ansi = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+// realityProbe matches the one sing-box message that says nothing about this
+// node: Reality's answer to a connection that is not an authenticated client.
+var realityProbe = regexp.MustCompile(
+	`process connection from (\S+):\d+: TLS handshake: REALITY: processed invalid connection`)
+
+// probeReportEvery is how often the suppressed probes are summarised.
+const probeReportEvery = 5 * time.Minute
+
+// pipeSingBoxLog copies sing-box's output to ours, stripping colour and
+// collapsing Reality's rejection notices into a periodic summary.
+//
+// A relay's :443 is scanned continuously -- 53 distinct addresses in six minutes
+// on ours -- and sing-box reports every one of those at ERROR level. It is not
+// an error and not about us, and the volume is what let a real FATAL sit
+// unnoticed in the log for hours.
+//
+// Counted rather than dropped, because the identical message is what a node
+// whose cached config holds a stale Reality public key would get. Many addresses
+// once each is the internet; one address over and over is a node of yours, and
+// the summary names it.
+func pipeSingBoxLog(r io.Reader, out io.Writer, every time.Duration) {
+	lines := make(chan string, 512)
+	go func() {
+		defer close(lines)
+		sc := bufio.NewScanner(r)
+		sc.Buffer(make([]byte, 0, 64*1024), 1<<20) // sing-box prints long lines
+		for sc.Scan() {
+			lines <- sc.Text()
+		}
+	}()
+
+	probes := map[string]int{}
+	since := time.Now()
+	report := func() {
+		if len(probes) > 0 {
+			total, worst, worstN := 0, "", 0
+			for addr, n := range probes {
+				total += n
+				if n > worstN || (n == worstN && addr < worst) {
+					worst, worstN = addr, n
+				}
+			}
+			logTo(out, "reality: rejected %d unauthenticated handshakes in %s from %d addresses (most: %s x%d)",
+				total, time.Since(since).Truncate(time.Second), len(probes), worst, worstN)
+			probes = map[string]int{}
+		}
+		since = time.Now()
+	}
+
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case line, ok := <-lines:
+			if !ok {
+				report() // sing-box exited; do not lose the tail
+				return
+			}
+			line = ansi.ReplaceAllString(line, "")
+			if m := realityProbe.FindStringSubmatch(line); m != nil {
+				probes[m[1]]++
+				continue
+			}
+			fmt.Fprintln(out, line)
+		case <-t.C:
+			report()
+		}
+	}
+}
+
 func (a *Agent) Run(ctx context.Context) error {
+	logf("node %q -> %s", a.Name, a.Head)
 	a.cfgPath = filepath.Join(a.DataDir, "singbox.json")
 	a.planPath = filepath.Join(a.DataDir, "relay-plan.json")
 	if err := os.MkdirAll(a.DataDir, 0o700); err != nil {
@@ -94,12 +187,13 @@ func (a *Agent) Run(ctx context.Context) error {
 		if _, statErr := os.Stat(a.cfgPath); statErr != nil {
 			return fmt.Errorf("initial sync (and no cached config): %w", err)
 		}
-		fmt.Fprintf(os.Stderr, "knot: initial sync failed (%v)\nknot: starting from cached config\n", err)
+		logf("initial sync failed (%v)", err)
+		logf("starting from cached config")
 		if b, rerr := os.ReadFile(a.planPath); rerr == nil {
 			var p Plan
 			if json.Unmarshal(b, &p) == nil {
 				if err := a.applyPlan(p); err != nil {
-					fmt.Fprintf(os.Stderr, "knot: cached relay plan failed: %v\n", err)
+					logf("cached relay plan failed: %v", err)
 				}
 			}
 		}
@@ -126,7 +220,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			if err := a.sync(ctx); err != nil {
 				// A head outage must not take the data plane down: sing-box
 				// keeps running with the config it already has.
-				fmt.Fprintf(os.Stderr, "knot: sync failed (keeping current config): %v\n", err)
+				logf("sync failed (keeping current config): %v", err)
 			}
 		}
 	}
@@ -153,9 +247,9 @@ func (a *Agent) superviseSingBox(ctx context.Context) {
 		if _, err := os.Stat(a.cfgPath); err != nil {
 			continue // no config yet; nothing to run
 		}
-		fmt.Fprintln(os.Stderr, "knot: sing-box is not running, restarting it")
+		logf("sing-box is not running, restarting it")
 		if err := a.startSingBox(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "knot: sing-box restart failed (retry in %s): %v\n", wait, err)
+			logf("sing-box restart failed (retry in %s): %v", wait, err)
 			select {
 			case <-ctx.Done():
 				return
@@ -180,7 +274,7 @@ func (a *Agent) load() error {
 			// the persisted copy -- and moving the head (say, from its public
 			// address to its mesh address) silently has no effect.
 			if a.Head != "" && a.Head != a.id.Head {
-				fmt.Fprintf(os.Stderr, "knot: head address changed %s -> %s\n", a.id.Head, a.Head)
+				logf("head address changed %s -> %s", a.id.Head, a.Head)
 				a.id.Head = a.Head
 				if nb, err := json.MarshalIndent(a.id, "", "  "); err == nil {
 					os.WriteFile(p, nb, 0o600)
@@ -278,14 +372,14 @@ func (a *Agent) sync(ctx context.Context) error {
 	// Hosts is only ever a file; sing-box does not read it (there is no dns
 	// block on purpose), so this never costs a reload.
 	if err := writeHosts(cr.Hosts); err != nil {
-		fmt.Fprintf(os.Stderr, "knot: hosts update failed: %v\n", err)
+		logf("hosts update failed: %v", err)
 	}
 
 	// Relay first: sing-box will start forwarding peer traffic into the SOCKS
 	// listener as soon as it comes up, so that listener has to exist already.
 	if a.planDirty || a.relay == nil {
 		if err := a.applyPlan(cr.Relay); err != nil {
-			fmt.Fprintf(os.Stderr, "knot: relay plan failed: %v\n", err)
+			logf("relay plan failed: %v", err)
 		} else {
 			a.planDirty = false
 		}
@@ -325,7 +419,7 @@ func (a *Agent) reenroll(ctx context.Context, reason string) error {
 		return fmt.Errorf("head still rejects our identity (%s) %s after re-joining",
 			reason, time.Since(a.lastRejoin).Truncate(time.Second))
 	}
-	fmt.Fprintf(os.Stderr, "knot: head rejected our identity (%s); re-joining with KNOT_TOKEN\n", reason)
+	logf("head rejected our identity (%s); re-joining with KNOT_TOKEN", reason)
 	if err := os.Remove(filepath.Join(a.DataDir, "identity.json")); err != nil && !os.IsNotExist(err) {
 		return err
 	}
@@ -334,7 +428,7 @@ func (a *Agent) reenroll(ctx context.Context, reason string) error {
 	if err := a.load(); err != nil {
 		return fmt.Errorf("re-join: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "knot: re-joined as %s (vip %s)\n", a.id.NodeID, a.id.VIP)
+	logf("re-joined as %s (vip %s)", a.id.NodeID, a.id.VIP)
 	// Pull the config for the new identity now rather than waiting 30s: on a
 	// cold start this is the first sync, so nothing has been applied yet. This
 	// recurses at most once -- a second rejection hits the lastRejoin guard
@@ -405,10 +499,27 @@ func (a *Agent) startLocked(ctx context.Context) error {
 	a.stopLocked()
 
 	cmd := exec.Command(a.SingBox, "run", "-c", a.cfgPath)
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	if err := cmd.Start(); err != nil {
+	// Both streams through one pipe so nothing bypasses the filter. An os.Pipe
+	// rather than cmd.StderrPipe(): that one is closed by cmd.Wait(), which runs
+	// in its own goroutine here and would race the reader.
+	pr, pw, err := os.Pipe()
+	if err != nil {
 		return err
 	}
+	cmd.Stdout, cmd.Stderr = pw, pw
+	if err := cmd.Start(); err != nil {
+		pr.Close()
+		pw.Close()
+		return err
+	}
+	// Drop our copy of the write end: the child holds its own, so the reader now
+	// sees EOF exactly when the child exits.
+	pw.Close()
+	go func() {
+		defer pr.Close()
+		pipeSingBoxLog(pr, os.Stderr, probeReportEvery)
+	}()
+
 	c := &child{cmd: cmd, done: make(chan struct{})}
 	go func() {
 		cmd.Wait() // reap, so a crashed child does not become a zombie
@@ -456,12 +567,12 @@ func (a *Agent) stopLocked() {
 		return
 	case <-time.After(5 * time.Second):
 	}
-	fmt.Fprintln(os.Stderr, "knot: sing-box ignored SIGTERM, killing it")
+	logf("sing-box ignored SIGTERM, killing it")
 	c.cmd.Process.Kill()
 	select {
 	case <-c.done:
 	case <-time.After(10 * time.Second):
-		fmt.Fprintln(os.Stderr, "knot: sing-box did not exit within 10s of SIGKILL")
+		logf("sing-box did not exit within 10s of SIGKILL")
 	}
 }
 

@@ -337,6 +337,12 @@ openssl s_client -connect HOST:443 -servername HOST -tls1_3 </dev/null |
 - 新配置先经 `sing-box check` 校验才替换，坏配置不会让节点失去数据面
 - head 说不认识这个节点（401）时，agent 会用 `KNOT_TOKEN` 重新接入，
   而不是拿着一个已经失效的凭证一直轮询
+- knot 自己的日志带时间戳（和 sing-box 同格式），并且剥掉 sing-box 的颜色转义，
+  所以一次 `docker logs` 读起来是一份日志而不是两份
+- Reality 对每个未认证的 `:443` 连接都回 `processed invalid connection`，级别是
+  ERROR，而公网中继是被持续扫描的 —— 我们自己的机器六分钟内 53 个不同源 IP。
+  这些行被折叠成每 5 分钟一条摘要。**是计数不是丢弃**：几十个 IP 各来一次是
+  互联网，一个 IP 反复来就是你自己某个节点的 Reality 公钥过期了，摘要会点名
 - 中继会话断了自动重连，退避封顶 60 秒 —— 中继停一小时再回来，
   一分钟内自动恢复
 - 转发前先看目标中继的会话活没活：主中继挂了直接跳下一条，

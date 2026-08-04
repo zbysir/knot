@@ -1,12 +1,16 @@
 package node
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func freeAddr(t *testing.T) string {
@@ -162,6 +166,63 @@ func TestRestartStartsWhenTheChildIsGone(t *testing.T) {
 	t.Cleanup(a.stopSingBox)
 	if !a.singBoxAlive() {
 		t.Fatal("restart did not start a child")
+	}
+}
+
+// TestLogLinesAreTimestamped: knot's own lines are read interleaved with
+// sing-box's dated ones, and an undated line cannot be correlated with the
+// sing-box error that explains it.
+func TestLogLinesAreTimestamped(t *testing.T) {
+	var b bytes.Buffer
+	logTo(&b, "relay: node %s online", "abc")
+	got := b.String()
+	if !strings.HasSuffix(got, " knot: relay: node abc online\n") {
+		t.Fatalf("unexpected line: %q", got)
+	}
+	stamp := got[:len(logTime)]
+	if _, err := time.Parse(logTime, stamp); err != nil {
+		t.Fatalf("line does not start with a parsable timestamp: %q", got)
+	}
+}
+
+// TestSingBoxLogSummarisesRealityProbes: a public :443 is scanned continuously
+// and sing-box reports every probe at ERROR level, which is how a real FATAL
+// went unnoticed in a relay's log for hours. Suppress the probes, keep
+// everything else, and never lose the fact that probing happened.
+func TestSingBoxLogSummarisesRealityProbes(t *testing.T) {
+	const probe = "inbound/vless[reality-in]: process connection from %s:443: TLS handshake: REALITY: processed invalid connection"
+	in := strings.Join([]string{
+		"\x1b[31mERROR\x1b[0m [1 41ms] " + fmt.Sprintf(probe, "1.2.3.4"),
+		"ERROR [2 3s] " + fmt.Sprintf(probe, "1.2.3.4"),
+		"ERROR [3 1s] " + fmt.Sprintf(probe, "9.9.9.9"),
+		"FATAL[0300] start service: start inbound/tun[tun-in]: open tun: TUNSETIFF: device or resource busy",
+		"ERROR [4 2s] " + fmt.Sprintf(probe, "1.2.3.4"),
+		// A node with a stale UUID passes Reality and must NOT be swallowed:
+		// unlike a probe, this one says something about our own mesh.
+		"ERROR [5 4ms] inbound/vless[reality-in]: process connection from 8.8.8.8:1: unknown UUID: 181c61f3",
+	}, "\n") + "\n"
+
+	var out bytes.Buffer
+	// every=time.Hour, so only the EOF report fires and the output is stable.
+	pipeSingBoxLog(strings.NewReader(in), &out, time.Hour)
+	got := out.String()
+
+	if strings.Contains(got, "processed invalid connection") {
+		t.Errorf("probe lines were passed through:\n%s", got)
+	}
+	for _, want := range []string{
+		"TUNSETIFF",    // the line that matters must survive
+		"unknown UUID", // and so must a real client failure
+		"rejected 4 unauthenticated handshakes",
+		"from 2 addresses",
+		"most: 1.2.3.4 x3", // one address over and over = a node of yours
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "\x1b[") {
+		t.Errorf("colour escapes were not stripped:\n%q", got)
 	}
 }
 
