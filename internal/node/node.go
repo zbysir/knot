@@ -73,12 +73,14 @@ type child struct {
 
 // DefaultPoll is how often a node asks the head for its config.
 //
-// Two seconds, not the 30 it used to be. Everything that follows a change to the
-// mesh is gated on this: a relay cannot accept a node that joined after its last
-// poll, so with a 30s interval a new node spent up to half a minute being
-// rejected by the relay with nothing in either log to say why. The cost is one
-// conditional GET per node per 2s, answered by a 304 that touches no disk.
-const DefaultPoll = 2 * time.Second
+// Ten seconds, down from 30. Everything that follows a change to the mesh is
+// gated on this: a relay cannot accept a node that joined after its last poll, so
+// at 30s a new node spent up to half a minute being rejected with nothing in
+// either log to say why. A poll is one conditional GET answered by a 304 that
+// touches no disk, so this is cheap -- but it is not free either, since a leaf's
+// poll travels through the Reality tunnel and the relay's reverse proxy to get
+// there. KNOT_POLL moves it.
+const DefaultPoll = 10 * time.Second
 
 // MinPoll keeps a mistaken KNOT_POLL from turning every node into a spin loop
 // against the head.

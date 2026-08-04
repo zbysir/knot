@@ -63,7 +63,7 @@ const usage = `knot -- mesh networking with a Reality data plane
       KNOT_ENDPOINT      host:port peers dial -- set this to make it a relay
       KNOT_DATA          state directory                   (default /var/lib/knot)
       KNOT_SINGBOX       sing-box binary path              (default sing-box)
-      KNOT_POLL          config poll interval              (default 2s, min 1s)
+      KNOT_POLL          config poll interval              (default 10s, min 1s)
 
   knot passwd <password> set the panel password (only while head is stopped;
                          prefer KNOT_PASSWORD on the head instead)
