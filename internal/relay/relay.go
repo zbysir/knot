@@ -244,47 +244,71 @@ func (c *Client) logf(f string, v ...any) {
 	}
 }
 
-// rejectedWithin is how quickly a session has to die after our Hello for the
-// cause to be an auth rejection rather than a network problem. The server answers
-// a failed Auth by closing without a word -- the protocol has no Hello reply --
-// so this is the only signal there is.
-const rejectedWithin = 3 * time.Second
+// acceptedAfter is how long a session has to stay open before we believe it was
+// accepted. The protocol has no reply to a Hello -- a relay answers a failed Auth
+// by closing, and a successful one by saying nothing at all -- so surviving is the
+// only confirmation there is.
+const acceptedAfter = 3 * time.Second
 
-// rejectedRetryCap bounds the wait after a rejection. The cause is almost always
-// a relay that has not polled the head yet, which fixes itself in seconds.
-const rejectedRetryCap = 5 * time.Second
+// waitingRetryCap bounds the retry wait while a relay has not accepted us yet.
+// That state resolves on the relay's own poll of the head, so the usual doubling
+// only delays the recovery it is waiting for.
+const waitingRetryCap = 5 * time.Second
+
+// noteRepeatAfter re-states a situation that has not changed, so a log opened
+// later still says what is going on.
+const noteRepeatAfter = 5 * time.Minute
 
 // Maintain keeps a session to relayID alive until ctx is done.
+//
+// It logs states, not events. A leaf that has just joined is refused by the relay
+// until the relay next polls the head, and reporting each of those refusals --
+// "session up", "ended: EOF (retry in 1s)", again, and again -- described a broken
+// node when nothing was wrong. Now that wait says it is a wait, once.
 func (c *Client) Maintain(ctx context.Context, relayID string) {
+	name := func() string { return c.name(relayID) }
 	backoff := time.Second
+
+	// note prints only when the situation changes, or when it has been saying the
+	// same thing for a while.
+	var last string
+	var lastAt time.Time
+	note := func(format string, v ...any) {
+		msg := fmt.Sprintf(format, v...)
+		if msg == last && time.Since(lastAt) < noteRepeatAfter {
+			return
+		}
+		last, lastAt = msg, time.Now()
+		c.logf("%s", msg)
+	}
+
 	for ctx.Err() == nil {
 		start := time.Now()
-		up, err := c.once(ctx, relayID)
+		opened, err := c.once(ctx, relayID, func() {
+			note("relay: session to %s established", name())
+			backoff = time.Second
+		})
 		if ctx.Err() != nil {
 			return
 		}
 		switch {
-		case err == nil:
-		case up && time.Since(start) < rejectedWithin:
-			// "session up" followed instantly by EOF read as a mystery twice
-			// before this line existed, and both times the answer was the same.
-			c.logf("relay: %s rejected our key -- it learns about new nodes on its next poll of the head; if this repeats, this node is no longer in the mesh (retry in %s)",
-				c.name(relayID), backoff)
-			// A rejection resolves on the relay's poll interval, so the usual
-			// doubling only delays the recovery it is waiting for.
-			if backoff > rejectedRetryCap {
-				backoff = rejectedRetryCap
+		case opened && time.Since(start) < acceptedAfter:
+			// Expected for a few seconds after this node joins the mesh, and the
+			// normal state for a node that has been removed from it.
+			note("relay: waiting for %s to accept this node -- it learns about new nodes when it polls the head", name())
+			if backoff > waitingRetryCap {
+				backoff = waitingRetryCap
 			}
-		default:
-			c.logf("relay: session to %s ended: %v (retry in %s)", c.name(relayID), err, backoff)
+		case err != nil:
+			note("relay: session to %s ended: %v (retrying)", name(), err)
 		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(backoff):
 		}
-		// Cap the backoff: a relay that has been down for an hour should still
-		// be picked up within a minute of coming back.
+		// Cap the backoff: a relay that has been down for an hour should still be
+		// picked up within a minute of coming back.
 		if backoff < 60*time.Second {
 			backoff *= 2
 		}
@@ -292,9 +316,10 @@ func (c *Client) Maintain(ctx context.Context, relayID string) {
 }
 
 // once holds one session open until it breaks. The bool reports whether the
-// session was ever established, which is what separates "cannot reach the relay"
-// from "the relay hung up on us".
-func (c *Client) once(ctx context.Context, relayID string) (bool, error) {
+// session was ever opened, which is what separates "cannot reach the relay" from
+// "the relay hung up on us". onAccepted fires once the session has stayed open
+// long enough to have been accepted, and not at all otherwise.
+func (c *Client) once(ctx context.Context, relayID string, onAccepted func()) (bool, error) {
 	conn, err := c.Dial(ctx, relayID)
 	if err != nil {
 		return false, err
@@ -311,10 +336,26 @@ func (c *Client) once(ctx context.Context, relayID string) (bool, error) {
 
 	c.setSession(relayID, sess)
 	defer c.setSession(relayID, nil)
-	// Optimistic on purpose: the relay sends nothing back on success, so this is
-	// as much confirmation as exists. Maintain reinterprets it if the session
-	// dies straight away.
-	c.logf("relay: session to %s up", c.name(relayID))
+
+	// Make the context mean what a reader assumes it means. AcceptStream below
+	// blocks until the session breaks, and cancelling ctx does not break it: ctx
+	// only ever governed the dial. Callers were left relying on an explicit Close
+	// to stop us, and anything that forgot waited out yamux's keepalive instead --
+	// half a minute of a session nobody wanted.
+	stopped := make(chan struct{})
+	defer close(stopped)
+	go func() {
+		select {
+		case <-ctx.Done():
+			sess.Close()
+		case <-stopped:
+		}
+	}()
+	// Announce the session only once it has survived; announcing it here, as this
+	// used to, meant "session up" was printed for sessions that had already been
+	// rejected.
+	accepted := time.AfterFunc(acceptedAfter, onAccepted)
+	defer accepted.Stop()
 
 	for {
 		st, err := sess.AcceptStream()
@@ -383,18 +424,6 @@ func (c *Client) Open(relayID, dstNode, dstAddr string) (net.Conn, error) {
 		return nil, err
 	}
 	return st, nil
-}
-
-// Close tears down the session to relayID, if any. Cancelling a Maintain
-// context does not do this on its own: the context only governs the dial, and
-// the loop is otherwise parked in AcceptStream on a live connection.
-func (c *Client) Close(relayID string) {
-	c.mu.RLock()
-	s := c.sess[relayID]
-	c.mu.RUnlock()
-	if s != nil {
-		s.Close()
-	}
 }
 
 // Up reports whether the session to relayID is usable, so callers can fail

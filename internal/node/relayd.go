@@ -197,11 +197,7 @@ func (r *relayd) syncUplinks(addrs []string) {
 		if want[addr] {
 			continue
 		}
-		stop()
-		// Cancelling is not enough to end the session: the context only governs
-		// the dial, while Maintain is parked in AcceptStream on a live
-		// connection. Close it so the goroutine actually returns.
-		r.client.Close(addr)
+		stop() // ends the session too, see Client.once
 		delete(r.uplinks, addr)
 		logf("relay: uplink %s dropped (no longer in plan)", addr)
 	}
@@ -265,12 +261,7 @@ func (a *Agent) stopRelay() {
 	if r.srv != nil {
 		r.srv.Close()
 	}
-	for addr := range r.uplinks {
-		if r.client != nil {
-			r.client.Close(addr) // see syncUplinks: cancelling alone leaves it parked
-		}
-	}
-	r.uplinks = nil
+	r.uplinks = nil // r.cancel() above already ended every session
 	r.mu.Unlock()
 }
 

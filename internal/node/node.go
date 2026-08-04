@@ -122,6 +122,13 @@ var ansi = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 var realityProbe = regexp.MustCompile(
 	`process connection from (\S+):\d+: TLS handshake: REALITY: processed invalid connection`)
 
+// benign are sing-box lines that report something we neither can nor need to act
+// on, and that read like a fault when they are not one:
+//
+//   - TUNSETOFFLOAD: the kernel will not do UDP checksum offload on this tun.
+//     sing-box carries on without it, at every start, on every host we run.
+var benign = regexp.MustCompile(`TUNSETOFFLOAD: invalid argument`)
+
 // probeReportEvery is how often the suppressed probes are summarised.
 const probeReportEvery = 5 * time.Minute
 
@@ -178,6 +185,9 @@ func pipeSingBoxLog(r io.Reader, out io.Writer, every time.Duration) {
 			line = ansi.ReplaceAllString(line, "")
 			if m := realityProbe.FindStringSubmatch(line); m != nil {
 				probes[m[1]]++
+				continue
+			}
+			if benign.MatchString(line) {
 				continue
 			}
 			fmt.Fprintln(out, line)
