@@ -35,8 +35,14 @@ type Node struct {
 	// UUID authenticates this node when it dials others.
 	UUID string `json:"uuid"`
 
-	Key      string    `json:"key"`       // node's API credential, issued at join
-	LastSeen time.Time `json:"last_seen"` // updated on every config poll
+	Key string `json:"key"` // node's API credential, issued at join
+	// LastSeen is runtime only -- see Store.WriteVolatile. Stamped on every
+	// config poll and deliberately never written to disk: persisting it made the
+	// whole state file a write-per-poll, and persisting it *sometimes* (whenever
+	// an unrelated change happened to flush) was worse -- the file then carried a
+	// last-seen time frozen at some arbitrary moment, which reads as authoritative
+	// and is not. The panel renders the zero value as "-" until the first poll.
+	LastSeen time.Time `json:"-"`
 	Created  time.Time `json:"created"`
 }
 
