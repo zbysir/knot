@@ -91,7 +91,7 @@ td.dirty input{border-color:#3b82f6}
     </div>
   </div>
   <table><thead><tr>
-    <th>名称</th><th>网内地址</th><th>角色</th><th>对外端点</th><th>伪装 SNI</th><th>回落</th><th>最近上报</th><th></th>
+    <th>名称</th><th>网内地址</th><th>角色</th><th>对外端点</th><th>伪装 SNI</th><th>回落</th><th>回落 PROXY</th><th>最近上报</th><th></th>
   </tr></thead><tbody id="nodes"></tbody></table>
   <div class="row" style="margin-top:12px">
     <button onclick="saveNodes()">保存节点</button>
@@ -100,6 +100,7 @@ td.dirty input{border-color:#3b82f6}
   </div>
   <div class="hint">「中继」= <b>有对外端点</b>的节点，别人能拨进来。清空对外端点就变回叶子，伪装 SNI 和回落会一并清掉（那两个只对中继有意义）。</div>
   <div class="hint">回落是 Reality 把非隧道流量转发过去的地方，指向本机真实站点，主动探测就只能看到那个站点。<b>那个站点的证书链不能太大</b>（超过约 4KB 会让连接在认证成功之后才断）。</div>
+  <div class="hint">「回落 PROXY」给转发过去的连接加一个 PROXY protocol 头，让回落站点能拿到访客的真实 IP，而不是只看到本机。<b>只在回落目标已配置为接受 PROXY protocol 时才开</b>，否则会把那个站点弄坏。</div>
 </section>
 
 <section>
@@ -205,6 +206,9 @@ function renderNodes() {
            oninput="setNode(${i},'server_name',this.value)"${relayOnly}></td>
       <td><input value="${esc(n.fallback||'')}" placeholder="${leaf ? '—' : '127.0.0.1:8443'}" style="width:150px"
            oninput="setNode(${i},'fallback',this.value)"${relayOnly}></td>
+      <td><select onchange="setNode(${i},'fallback_proxy_protocol',Number(this.value))"${relayOnly}>
+           ${[0, 1, 2].map(v => `<option value="${v}"${Number(n.fallback_proxy_protocol||0) === v ? ' selected' : ''}>${v === 0 ? '关' : 'v' + v}</option>`).join('')}
+          </select></td>
       <td>${ago(n.last_seen)}</td>
       <td><button class="ghost" onclick="del('${n.id}','${esc(n.name)}')">删除</button></td>
     </tr>`;
@@ -238,6 +242,7 @@ async function saveNodes() {
         endpoint: n.endpoint || '',
         server_name: n.server_name || '',
         fallback: n.fallback || '',
+        fallback_proxy_protocol: Number(n.fallback_proxy_protocol) || 0,
       });
     }
   } catch (e) {

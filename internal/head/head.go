@@ -501,7 +501,8 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 				"id": n.ID, "name": n.Name, "vip": n.VIP,
 				"is_relay": n.IsRelay, "endpoint": n.Endpoint,
 				"server_name": n.ServerName, "fallback": n.Fallback,
-				"last_seen": n.LastSeen, "created": n.Created,
+				"fallback_proxy_protocol": n.FallbackProxyProtocol,
+				"last_seen":               n.LastSeen, "created": n.Created,
 			})
 		}
 		toks := make([]map[string]any, 0, len(st.Tokens))
@@ -577,10 +578,11 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 	//   nil -> leave alone
 	//   ""  -> clear
 	var req struct {
-		ID         string  `json:"id"`
-		Endpoint   *string `json:"endpoint"`
-		ServerName *string `json:"server_name"`
-		Fallback   *string `json:"fallback"`
+		ID                    string  `json:"id"`
+		Endpoint              *string `json:"endpoint"`
+		ServerName            *string `json:"server_name"`
+		Fallback              *string `json:"fallback"`
+		FallbackProxyProtocol *int    `json:"fallback_proxy_protocol"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 	err := s.store.Write(func(st *model.State) error {
@@ -609,6 +611,13 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 			}
 			n.Fallback = v
 		}
+		if req.FallbackProxyProtocol != nil {
+			v := *req.FallbackProxyProtocol
+			if v < 0 || v > 2 {
+				return fmt.Errorf("回落 PROXY protocol 版本只能是 0、1 或 2")
+			}
+			n.FallbackProxyProtocol = v
+		}
 
 		// Role follows the endpoint, exactly as the panel describes it:
 		// "a relay is a node with an endpoint". Keeping IsRelay as an
@@ -636,7 +645,7 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 			// not keep displaying an endpoint the node does not listen on.
 			// The Reality keypair is kept -- reusing it on re-promotion avoids
 			// pushing a new public key to every peer.
-			n.ServerName, n.Fallback = "", ""
+			n.ServerName, n.Fallback, n.FallbackProxyProtocol = "", "", 0
 		}
 		return nil
 	})

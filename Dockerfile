@@ -3,7 +3,14 @@
 # sing-box ships as a separate binary rather than a linked library on purpose:
 # its Go API changes between releases, while the CLI and config schema are the
 # supported interface. Upgrading is a one-line version bump here.
-ARG SINGBOX_VERSION=1.13.15
+#
+# It is built from a fork, for one patch: upstream Reality drops the client
+# address when it forwards an unauthenticated connection to the fallback, so a
+# fallback that serves real websites sees every visitor as one internal address.
+# The fork adds `reality.handshake.proxy_protocol`; everything else tracks the
+# upstream tag the version below is based on.
+ARG SINGBOX_REPO=https://github.com/zbysir/sing-box.git
+ARG SINGBOX_VERSION=1.13.15-proxyproto.1
 
 # Builder stages pin to BUILDPLATFORM and cross-compile via GOOS/GOARCH.
 # Running them under QEMU emulation instead also works, but compiling sing-box
@@ -24,14 +31,17 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
 # `with_utls` and passing it is now a hard compile error. The official release
 # binary therefore does include Reality server support, despite the tag not
 # appearing in `sing-box version` output.
+# The fork keeps upstream's module path, so `go install <fork>@version` cannot
+# resolve it -- clone the tag and build from the working tree instead.
 FROM --platform=$BUILDPLATFORM golang:1.24-bookworm AS singbox
-ARG SINGBOX_VERSION
+ARG SINGBOX_REPO SINGBOX_VERSION
 ARG TARGETOS TARGETARCH
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-      go install -trimpath -ldflags="-s -w" \
+WORKDIR /singbox
+RUN git clone --depth 1 --branch "v${SINGBOX_VERSION}" "${SINGBOX_REPO}" . && \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+      go build -trimpath -ldflags="-s -w" \
       -tags "with_gvisor,with_quic,with_utls" \
-      github.com/sagernet/sing-box/cmd/sing-box@v${SINGBOX_VERSION} && \
-    find /go/bin -name sing-box -exec cp {} /usr/local/bin/sing-box \;
+      -o /usr/local/bin/sing-box ./cmd/sing-box
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates iproute2 && \

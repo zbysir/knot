@@ -98,6 +98,9 @@ func realityInbound(st *model.State, n *model.Node) (map[string]any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("relay %s endpoint: %w", n.Name, err)
 	}
+	if n.FallbackProxyProtocol < 0 || n.FallbackProxyProtocol > 2 {
+		return nil, fmt.Errorf("relay %s fallback_proxy_protocol: want 0, 1 or 2, got %d", n.Name, n.FallbackProxyProtocol)
+	}
 	users := make([]any, 0, len(st.Nodes))
 	for _, p := range st.Nodes {
 		users = append(users, map[string]any{
@@ -105,6 +108,15 @@ func realityInbound(st *model.State, n *model.Node) (map[string]any, error) {
 			"uuid": p.UUID,
 			"flow": "xtls-rprx-vision",
 		})
+	}
+	handshake := map[string]any{
+		"server":      host,
+		"server_port": port,
+	}
+	// Omitted when off: an older sing-box rejects the unknown field outright
+	// rather than ignoring it, so an image without the patch still starts.
+	if n.FallbackProxyProtocol > 0 {
+		handshake["proxy_protocol"] = n.FallbackProxyProtocol
 	}
 	return map[string]any{
 		"type":        "vless",
@@ -120,11 +132,8 @@ func realityInbound(st *model.State, n *model.Node) (map[string]any, error) {
 			"enabled":     true,
 			"server_name": n.ServerName,
 			"reality": map[string]any{
-				"enabled": true,
-				"handshake": map[string]any{
-					"server":      host,
-					"server_port": port,
-				},
+				"enabled":     true,
+				"handshake":   handshake,
 				"private_key": n.RealityPrivate,
 				"short_id":    []string{n.ShortID},
 			},

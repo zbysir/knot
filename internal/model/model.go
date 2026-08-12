@@ -31,6 +31,12 @@ type Node struct {
 	// active probing sees a genuine server.
 	ServerName string `json:"server_name,omitempty"`
 	Fallback   string `json:"fallback,omitempty"` // host:port, e.g. 127.0.0.1:8443
+	// FallbackProxyProtocol prefixes forwarded connections with a PROXY
+	// protocol header (1 or 2) so the fallback can recover the visitor's
+	// address instead of seeing this relay. Off unless the fallback is
+	// configured to expect it -- sending a header to a server that does not
+	// breaks that server.
+	FallbackProxyProtocol int `json:"fallback_proxy_protocol,omitempty"`
 
 	// UUID authenticates this node when it dials others.
 	UUID string `json:"uuid"`
