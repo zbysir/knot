@@ -58,8 +58,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { false }
 
     func applicationShouldHandleReopen(_ app: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag { window.makeKeyAndOrderFront(nil) }
+        if !flag { showWindow() }
         return true
+    }
+
+    // showWindow brings the window back, rebuilding it if it somehow went away.
+    // Belt and braces after the crash above: a window that cannot be reopened
+    // leaves an operator with a running app, live tunnels, and no way in.
+    @objc private func showWindow() {
+        if window == nil || web == nil {
+            buildWindow()
+            load()
+            return
+        }
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     // MARK: - the helper
@@ -148,18 +161,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         web = WKWebView(frame: .zero, configuration: cfg)
         web.navigationDelegate = self
         web.uiDelegate = self
-        // The panel is its own page; no browser chrome, no rubber-banding past
-        // its edges.
-        if web.responds(to: Selector(("setAllowsMagnification:"))) {
-            web.allowsMagnification = false
+        web.allowsMagnification = false
+        // Match the panel's own background so there is no white flash before
+        // the first paint. Through the supported property rather than the
+        // private `drawsBackground` KVC everyone uses -- this app is meant to
+        // keep working across an OS update.
+        if #available(macOS 12.0, *) {
+            web.underPageBackgroundColor = NSColor(srgbRed: 0.059, green: 0.067, blue: 0.082, alpha: 1)
         }
-        web.setValue(false, forKey: "drawsBackground")
 
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1000, height: 740),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered, defer: false)
         window.title = "Knot"
+        // WITHOUT THIS THE APP CRASHES when you close the window and then click
+        // the Dock icon. NSWindow defaults isReleasedWhenClosed to true, so
+        // closing deallocates it while this strong reference still points
+        // there; the next applicationShouldHandleReopen sends a message to
+        // freed memory. The window's lifetime is ours, not the close button's.
+        window.isReleasedWhenClosed = false
         window.contentView = web
         window.minSize = NSSize(width: 560, height: 420)
         // The panel is dark. Matching the window means no white flash while the
@@ -282,6 +303,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         let winItem = NSMenuItem()
         bar.addItem(winItem)
         let win = NSMenu(title: "窗口")
+        win.addItem(withTitle: "显示 Knot 窗口", action: #selector(showWindow), keyEquivalent: "0")
+        win.addItem(.separator())
+        // Closing the window leaves the app running on purpose -- the tunnels
+        // outlive it. cmd-W is what people reach for, so it should do the same
+        // thing the red button does rather than be missing.
+        win.addItem(withTitle: "关闭窗口", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         win.addItem(withTitle: "最小化", action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m")
         win.addItem(withTitle: "缩放", action: #selector(NSWindow.zoom(_:)), keyEquivalent: "")
         winItem.submenu = win
