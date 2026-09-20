@@ -88,6 +88,7 @@ GPL-3.0, and calling a separate binary keeps that off knot itself.
 |---|---|
 | `knot head` | Control plane: node registry, routing policy, tokens, web panel. **Never on the data path** |
 | `knot node` | Per-machine agent: joins with a token, syncs config, supervises sing-box |
+| `knot connect` | Operator client: outbound only, no TUN, forwards local ports into the mesh (ships as a Mac app) |
 | sing-box | The data plane: Reality in/out, TUN, and health-checked relay failover |
 
 sing-box runs as a **child process** in the same container rather than being
@@ -298,6 +299,111 @@ config needs the head.
 
 Since only relays are reachable by every node, **the head belongs on a relay** —
 its reachability requirement is identical, so co-locating costs nothing.
+
+## The operator client (Mac app)
+
+To debug against a production database you do not want your laptop to become a
+member of the network. You want **a couple of local ports wired to a couple of
+remote ones** -- `ssh -L`, with Reality as the tunnel.
+
+That is `knot connect`, a third role that splits apart three properties usually
+bundled together:
+
+| | Has a mesh address | Dialable by others | Forwards for others |
+|---|---|---|---|
+| Relay | yes | yes | yes |
+| Leaf | yes | yes (over the session it dialled out) | no |
+| **Client** | **no** | **no** | no |
+
+A client gets no VIP, appears in no node's hosts file or routing table, and is
+absent from the relays' `PeerKeys` -- a relay has **nowhere to look one up**, so
+nothing can be pushed at it. That is structural, not a promise the client makes
+about itself.
+
+It also creates **no TUN device**, so it needs no root, installs no utun,
+touches no routing table, and cannot collide with Tailscale or a corporate VPN
+-- which on macOS is the real problem. Quitting leaves nothing behind.
+
+The cost is that it reaches only the ports you configured, rather than the whole
+mesh CIDR by IP. For "let me look at the production database", that is the right
+shape.
+
+### Why issuing and revoking disturbs nobody
+
+A relay's Reality user list lives in the sing-box config, and changing that
+restarts sing-box -- dropping every tunnel in the mesh. So **client credentials
+are not in it**.
+
+What is in it is one constant entry, `knot-client`, shared by every client. It
+is a door, not a key: the relay's generated route rules pin that user to a
+single destination, ahead of every other rule.
+
+```jsonc
+{ "auth_user": ["knot-client"], "ip_cidr": ["10.88.0.1/32"], "port": [9997], "outbound": "direct" },
+{ "auth_user": ["knot-client"], "action": "reject" }
+```
+
+Holding the shared uuid lets you knock on knot's own port and do nothing else.
+**The identity that matters is checked behind that door**: the client sends
+`Hello{node id, key}` and relayd checks it against `ClientKeys`, which travels
+in the relay plan -- swapped in place by `applyPlan`, restarting nothing.
+
+- **Issue** = one more hash in the plan. Live within a relay poll (10s).
+- **Revoke** = one fewer, and `setPlan` also **closes the live session**. `Auth`
+  runs once per session, so without that a revoked laptop keeps working until it
+  happens to reconnect.
+- Throughout, the relay's sing-box config is byte-identical, and no other node
+  learns anything happened.
+
+### Install
+
+```bash
+brew install sing-box            # transport only; the client needs nothing else
+./dist/macos/build-app.sh        # produces dist/macos/build/Knot.app
+cp -r dist/macos/build/Knot.app /Applications/
+```
+
+Add `--with-singbox` to copy the sing-box binary into the bundle. The app is a
+background agent with no dock icon: its UI is a local page at
+<http://127.0.0.1:8765>, and you quit it from there. The same thing runs from a
+terminal as `knot connect [--ui ADDR] [--data DIR] [--singbox PATH] [--no-open]`.
+
+> **Upgrade the head before the relays.** A relay still on an older binary does
+> not know about `ClientKeys` and will refuse a client at the handshake.
+>
+> Upgrading the head **restarts sing-box on the relays once** -- their config
+> gains the door and its two rules -- so tunnels reconnect at that moment. It is
+> a one-off: issuing and revoking clients afterwards costs no restart at all.
+> Leaf configs are unaffected.
+
+### Use
+
+Issue a credential in the head panel under 运维客户端, paste the address and
+token into the app, then add forwards. A forward is **a local port, the machine
+that dials, and the address it dials** -- and that machine can be any node,
+relay or leaf:
+
+| What you want | Which machine | What it dials |
+|---|---|---|
+| The database on pg | `pg` | `127.0.0.1:5432` |
+| The managed database in hk's VPC | `hk` | `rds-prod.internal:3306` |
+
+The address is resolved and connected **by that machine**, so the laptop does
+not need to reach it at all. Names are passed through verbatim and never hit
+whatever resolver the local network handed out.
+
+### Things to know
+
+- **TCP only.** The data plane carries streams, not packets; UDP to a leaf is
+  explicitly dropped.
+- **The credential is worth everything that machine can reach**, since what a
+  client gets is "ask a node to dial this for me". Revoke it in the panel when
+  you are done, and give it an expiry when you issue it. (Tightening it further
+  is a destination ACL keyed on `auth_user` at the relay -- the extension point
+  is already there, and relayd already knows which client is asking.)
+- Forwards listen on 127.0.0.1 only, and local ports must be >= 1024.
+- Adding or removing a forward **does not restart sing-box**: the listeners
+  belong to knot, sing-box only does transport.
 
 ## Sharing 443 with an existing site
 

@@ -2,6 +2,7 @@
 //
 //	knot head                 run the control plane + web panel
 //	knot node                 run the agent (joins with a token, then syncs)
+//	knot connect              run the read-only client app (local panel, port forwards)
 //	knot passwd <password>    set the panel password
 //
 // Everything is configured through environment variables so a node is
@@ -19,15 +20,29 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/zbysir/knot/internal/client"
 	"github.com/zbysir/knot/internal/head"
 	"github.com/zbysir/knot/internal/model"
 	"github.com/zbysir/knot/internal/node"
 )
 
 func main() {
-	cmd := ""
-	if len(os.Args) > 1 {
-		cmd = os.Args[1]
+	cmd, args := "", os.Args[1:]
+	if len(args) > 0 {
+		cmd = args[0]
+	}
+	// Inside a .app bundle the client is the only thing there is to run, so
+	// anything that is not a subcommand means "connect": no arguments at all
+	// (a double-click), a "-psn_0_..." process serial number (older macOS), or
+	// a flag typed by someone driving the bundled binary from a terminal. The
+	// args are NOT advanced in that case -- there is no subcommand word to skip.
+	switch cmd {
+	case "head", "node", "connect", "passwd":
+		args = args[1:]
+	default:
+		if exe, err := os.Executable(); err == nil && strings.Contains(exe, ".app/Contents/MacOS/") {
+			cmd = "connect"
+		}
 	}
 	var err error
 	switch cmd {
@@ -35,6 +50,8 @@ func main() {
 		err = runHead()
 	case "node":
 		err = runNode()
+	case "connect":
+		err = runConnect(args)
 	case "passwd":
 		err = runPasswd()
 	default:
@@ -64,6 +81,13 @@ const usage = `knot -- mesh networking with a Reality data plane
       KNOT_DATA          state directory                   (default /var/lib/knot)
       KNOT_SINGBOX       sing-box binary path              (default sing-box)
       KNOT_POLL          config poll interval              (default 10s, min 1s)
+
+  knot connect           read-only client: local panel + port forwards, no tun
+      --ui ADDR          panel listen address              (default 127.0.0.1:8765)
+      --data DIR         state directory                   (default ~/.knot)
+      --singbox PATH     sing-box binary                   (default: found on PATH)
+      --no-open          do not open a browser at startup
+      --exit-with-parent quit when the process that launched this one does
 
   knot passwd <password> set the panel password (only while head is stopped;
                          prefer KNOT_PASSWORD on the head instead)
@@ -142,6 +166,74 @@ func runNode() error {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { waitSignal(); cancel() }()
+	return a.Run(ctx)
+}
+
+// runConnect starts the workstation client.
+//
+// Flags rather than env vars, unlike every other command here: this one is
+// launched by double-clicking an icon or typing one line in a terminal, not by
+// a container runtime that only knows how to set the environment.
+func runConnect(args []string) error {
+	a := client.New()
+	exitWithParent := false
+	for i := 0; i < len(args); i++ {
+		next := func() (string, error) {
+			if i+1 >= len(args) {
+				return "", fmt.Errorf("%s needs a value", args[i])
+			}
+			i++
+			return args[i], nil
+		}
+		var err error
+		switch args[i] {
+		case "--ui":
+			a.UIAddr, err = next()
+		case "--data":
+			a.DataDir, err = next()
+		case "--singbox":
+			a.SingBox, err = next()
+		case "--no-open":
+			a.OpenUI = false
+		case "--exit-with-parent":
+			exitWithParent = true
+		case "-h", "--help":
+			fmt.Print(usage)
+			return nil
+		default:
+			if strings.HasPrefix(args[i], "-psn_") {
+				continue // macOS process serial number, see main()
+			}
+			return fmt.Errorf("unknown flag %q", args[i])
+		}
+		if err != nil {
+			return err
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { waitSignal(); cancel() }()
+	if exitWithParent {
+		// The GUI shell runs this as a child and ends it on quit -- but only if
+		// the shell gets to run its own shutdown. A crash or a kill -9 leaves
+		// this process holding the panel port and every forward, invisibly,
+		// with no window to close it from. macOS has no PDEATHSIG, so watch for
+		// the parent going away: being re-parented to init is what that looks
+		// like.
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(time.Second):
+				}
+				if os.Getppid() == 1 {
+					fmt.Fprintln(os.Stderr, "knot: 宿主进程已退出，关闭")
+					cancel()
+					return
+				}
+			}
+		}()
+	}
 	return a.Run(ctx)
 }
 
