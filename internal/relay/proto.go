@@ -24,7 +24,7 @@ const (
 	// open is the first message on a new stream: where to connect.
 	msgOpen = 2
 	// ok / fail answer an open.
-	msgOK   = 3
+	msgOK = 3
 	// failure carries a reason so the caller can log something useful instead
 	// of a bare connection reset.
 	msgFail = 4

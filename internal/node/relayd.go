@@ -26,6 +26,8 @@ type Plan struct {
 	Peers   []PlanPeer `json:"peers"`
 	// PeerKeys maps node ID -> sha256(key). Relays only.
 	PeerKeys map[string]string `json:"peer_keys,omitempty"`
+	// ClientKeys is the same for read-only operator clients. Relays only.
+	ClientKeys map[string]string `json:"client_keys,omitempty"`
 	// Names maps node ID -> name AND relay address -> name, for the logs. A plan
 	// cached by an older node has none, and every lookup then falls back to the
 	// key it was given.
@@ -42,11 +44,12 @@ type PlanPeer struct {
 
 // relayd owns everything on the relay data path for one node.
 type relayd struct {
-	client *relay.Client
-	reg    *relay.Registry
-	socks  net.Listener
-	ctx    context.Context
-	cancel context.CancelFunc
+	client  *relay.Client
+	reg     *relay.Registry
+	clients *relay.Registry // read-only clients; never routed to
+	socks   net.Listener
+	ctx     context.Context
+	cancel  context.CancelFunc
 
 	mu      sync.Mutex
 	plan    Plan                          // replaced wholesale by setPlan
@@ -72,8 +75,24 @@ func (a *Agent) applyPlan(p Plan) error {
 		return a.startRelay(p)
 	}
 	r.setPlan(p)
+	r.dropRevokedClients(p)
 	r.syncUplinks(p.Uplinks)
 	return nil
+}
+
+// dropRevokedClients ends the sessions of clients the head no longer lists.
+//
+// The plan swap above is enough to stop a revoked client from connecting
+// AGAIN, but Auth runs once per session and a laptop that is already connected
+// would keep working until it happened to reconnect. Revoking has to mean
+// revoked now -- that is the whole reason the credential lives in the plan.
+func (r *relayd) dropRevokedClients(p Plan) {
+	if r.clients == nil {
+		return
+	}
+	for _, id := range r.clients.CloseUnlisted(p.ClientKeys) {
+		logf("relay: client %s revoked, session closed", r.nameOf(id))
+	}
 }
 
 func (r *relayd) needsRebuild(p Plan) bool {
@@ -104,9 +123,13 @@ func (a *Agent) startRelay(p Plan) error {
 	if p.IsRelay && p.Listen != "" {
 		r.reg = relay.NewRegistry()
 		r.reg.NameOf = r.nameOf
+		r.clients = relay.NewRegistry()
+		r.clients.NameOf = r.nameOf
 		srv := &relay.Server{
-			Reg:    r.reg,
-			NameOf: r.nameOf,
+			Reg:     r.reg,
+			Clients: r.clients,
+			SelfID:  p.SelfID,
+			NameOf:  r.nameOf,
 			// The head issues each node's key and tells the relay the hashes.
 			// Accepting any non-empty key would let anyone who reaches this
 			// port register as any node. Read through peerKey rather than
@@ -114,6 +137,14 @@ func (a *Agent) startRelay(p Plan) error {
 			// being accepted on this very callback.
 			Auth: func(nodeID, key string) bool {
 				want := r.peerKey(nodeID)
+				return want != "" && hashKey(key) == want
+			},
+			// Same check, different list. Read through the plan rather than
+			// capturing the map, for the same reason as above: a revocation
+			// arrives as a new plan while sessions are being accepted on this
+			// very callback.
+			AuthClient: func(nodeID, key string) bool {
+				want := r.clientKey(nodeID)
 				return want != "" && hashKey(key) == want
 			},
 			Logf: logf,
@@ -182,6 +213,14 @@ func (r *relayd) peerKey(nodeID string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.plan.PeerKeys[nodeID]
+}
+
+// clientKey returns the expected key hash for a read-only client, or "" if it
+// is not allowed on this relay.
+func (r *relayd) clientKey(nodeID string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.plan.ClientKeys[nodeID]
 }
 
 // syncUplinks starts a session to each relay that is new in the plan and stops

@@ -86,6 +86,27 @@ func (r *Registry) Dial(nodeID, dstAddr string) (net.Conn, error) {
 	return st, nil
 }
 
+// CloseUnlisted ends every session whose ID is not in allowed, and returns the
+// IDs it closed.
+//
+// This is what makes a revocation take effect now rather than whenever the far
+// side happens to reconnect: Auth only runs once, at Hello, so dropping a key
+// from the plan does nothing at all to a session that is already open.
+func (r *Registry) CloseUnlisted(allowed map[string]string) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var closed []string
+	for id, s := range r.m {
+		if _, ok := allowed[id]; ok {
+			continue
+		}
+		s.Close()
+		delete(r.m, id)
+		closed = append(closed, id)
+	}
+	return closed
+}
+
 // Online lists the node IDs with a live session, for the panel.
 func (r *Registry) Online() []string {
 	r.mu.RLock()
@@ -113,8 +134,24 @@ func muxConfig() *yamux.Config {
 // between them.
 type Server struct {
 	Reg *Registry
-	// Auth verifies a Hello. Returning false drops the session.
+	// SelfID is this relay's node ID. A stream addressed to it is one we dial
+	// ourselves instead of forwarding -- that is how an operator client reaches
+	// anything this machine can reach, such as a database on a private address
+	// that is not a mesh member at all.
+	SelfID string
+	// Clients holds the sessions of read-only clients.
+	//
+	// A SEPARATE registry, never consulted when routing a stream. That is the
+	// enforcement of "nothing can reach my laptop": it is not a promise the
+	// client makes about itself, it is that the relay has nowhere to look up a
+	// client to push a stream to. The registry exists only so a revoked
+	// credential's session can be closed, and so the logs can say who is on.
+	Clients *Registry
+	// Auth verifies a Hello from a mesh node. Returning false drops the session.
 	Auth func(nodeID, key string) bool
+	// AuthClient verifies a Hello from a read-only client. Checked only after
+	// Auth has declined, so a node is never mistaken for a client.
+	AuthClient func(nodeID, key string) bool
 	// Logf is optional.
 	Logf func(format string, v ...any)
 	// NameOf, when set, turns a node ID into the name the panel shows. The wire
@@ -151,8 +188,13 @@ func (s *Server) handleConn(c net.Conn) {
 		return
 	}
 	c.SetReadDeadline(time.Time{})
-	if s.Auth != nil && !s.Auth(h.NodeID, h.Key) {
-		s.logf("relay: rejected node %s", s.name(h.NodeID))
+	isClient := false
+	switch {
+	case s.Auth != nil && s.Auth(h.NodeID, h.Key):
+	case s.AuthClient != nil && s.AuthClient(h.NodeID, h.Key):
+		isClient = true
+	default:
+		s.logf("relay: rejected %s", s.name(h.NodeID))
 		return
 	}
 
@@ -163,10 +205,18 @@ func (s *Server) handleConn(c net.Conn) {
 	}
 	defer sess.Close()
 
-	s.Reg.put(h.NodeID, sess)
-	defer s.Reg.drop(h.NodeID, sess)
-	s.logf("relay: node %s online", s.name(h.NodeID))
-	defer s.logf("relay: node %s offline", s.name(h.NodeID))
+	kind := "node"
+	reg := s.Reg
+	if isClient {
+		kind = "client"
+		reg = s.Clients
+	}
+	if reg != nil {
+		reg.put(h.NodeID, sess)
+		defer reg.drop(h.NodeID, sess)
+	}
+	s.logf("relay: %s %s online", kind, s.name(h.NodeID))
+	defer s.logf("relay: %s %s offline", kind, s.name(h.NodeID))
 
 	for {
 		st, err := sess.AcceptStream()
@@ -177,6 +227,9 @@ func (s *Server) handleConn(c net.Conn) {
 	}
 }
 
+// localDialTimeout bounds a dial this relay makes on somebody else's behalf.
+const localDialTimeout = 10 * time.Second
+
 // handleStream forwards one stream toward its destination node.
 func (s *Server) handleStream(st *yamux.Stream) {
 	defer st.Close()
@@ -186,6 +239,16 @@ func (s *Server) handleStream(st *yamux.Stream) {
 		return
 	}
 	st.SetReadDeadline(time.Time{})
+
+	// Addressed to us: dial it here. A leaf reaches arbitrary addresses through
+	// sing-box already ("final": "direct" on the relay), so this grants nothing
+	// new -- but a client has no sing-box path of its own, and this is how it
+	// reaches an address that is not a mesh member: a managed database, a host
+	// in the relay's VPC, a service on the relay's own loopback.
+	if o.DstNode == s.SelfID && s.SelfID != "" {
+		s.dialLocal(st, o)
+		return
+	}
 
 	peer := s.Reg.get(o.DstNode)
 	if peer == nil {
@@ -218,6 +281,21 @@ func (s *Server) handleStream(st *yamux.Stream) {
 	splice(st, out)
 }
 
+// dialLocal connects from this machine and splices.
+func (s *Server) dialLocal(st *yamux.Stream, o Open) {
+	d := net.Dialer{Timeout: localDialTimeout}
+	out, err := d.Dial("tcp", o.DstAddr)
+	if err != nil {
+		WriteResult(st, fmt.Errorf("dial %s: %v", o.DstAddr, err))
+		return
+	}
+	defer out.Close()
+	if err := WriteResult(st, nil); err != nil {
+		return
+	}
+	splice(st, out)
+}
+
 // ------------------------------------------------------------------ client
 
 // Client runs on every node. It keeps a session to each relay and serves
@@ -231,6 +309,13 @@ type Client struct {
 	Logf func(format string, v ...any)
 	// NameOf, when set, names a relay address for the logs.
 	NameOf func(string) string
+	// NoInbound refuses streams the relay pushes down, for an operator client
+	// that must not be reachable.
+	//
+	// Belt to the relay's braces: a relay does not register clients and so has
+	// no way to address one, but a client should not be one server-side bug
+	// away from becoming a listener on somebody's laptop.
+	NoInbound bool
 
 	mu   sync.RWMutex
 	sess map[string]*yamux.Session // relayID -> session
@@ -389,6 +474,12 @@ func (c *Client) serveInbound(st *yamux.Stream) {
 		return
 	}
 	st.SetReadDeadline(time.Time{})
+
+	if c.NoInbound {
+		c.logf("relay: refused an inbound stream to %s -- this is a read-only client", o.DstAddr)
+		WriteResult(st, fmt.Errorf("read-only client"))
+		return
+	}
 
 	d := net.Dialer{Timeout: 10 * time.Second}
 	target, err := d.Dial("tcp", o.DstAddr)
