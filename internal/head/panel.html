@@ -83,6 +83,11 @@ td.dirty input{border-color:#3b82f6}
       <button class="ghost" onclick="closeJoin()">收起</button>
     </div>
     <div class="hint" id="jHint" style="margin:0 0 8px"></div>
+    <div class="hint" style="margin:0 0 8px">
+      要让自己的电脑连进来调试？那不是节点 —— 往下到
+      <a href="#clients" onclick="document.getElementById('clients').scrollIntoView({behavior:'smooth'});return false"
+         style="color:var(--acc)">「运维客户端」</a>签发凭证，填进 Knot App。
+    </div>
     <div class="hint" style="margin:0 0 6px">在新机器上执行：</div>
     <div class="mono" id="jCmd" style="background:#000;padding:10px;border-radius:6px;font-size:12px;white-space:pre-wrap;word-break:break-all"></div>
     <div class="row" style="margin-top:10px">
