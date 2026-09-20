@@ -10,11 +10,35 @@ import (
 	"time"
 )
 
-// Node is one machine in the mesh.
+// Roles a node record can have. The zero value is a mesh member, so every
+// record written before clients existed keeps its meaning.
+const (
+	RoleNode   = ""
+	RoleClient = "client"
+)
+
+// Node is one machine in the mesh -- or, when Role is RoleClient, one operator
+// workstation that only dials INTO it.
 type Node struct {
 	ID   string `json:"id"`   // stable, generated at join
 	Name string `json:"name"` // human name, also the MagicDNS-ish label
-	VIP  string `json:"vip"`  // 10.88.0.x, assigned by head
+	VIP  string `json:"vip"`  // 10.88.0.x, assigned by head; empty for clients
+
+	// Role separates the two things a record can be.
+	//
+	// A client is not a member of the address space: no VIP, absent from every
+	// other node's hosts file, routing table and relay plan, and -- the part
+	// that matters operationally -- absent from the relays' Reality user list.
+	// That list lives in the sing-box config, so putting clients in it would
+	// mean a config change, and therefore a sing-box restart on every relay,
+	// every time a laptop credential is issued or revoked. Clients authenticate
+	// through the shared door instead (see State.ClientUUID), which is constant,
+	// and are then checked individually by knot's own relay protocol against a
+	// list the relay hot-reloads.
+	Role string `json:"role,omitempty"`
+	// Expires bounds a client credential. Zero means never. Nodes ignore it:
+	// a server that stops working at midnight is not a feature.
+	Expires time.Time `json:"expires,omitempty"`
 
 	// Relay fields. A node is dialable by others only if it has a public
 	// endpoint -- that means it terminates a Reality inbound.
@@ -52,6 +76,23 @@ type Node struct {
 	Created  time.Time `json:"created"`
 }
 
+// IsClient reports whether this record is an operator client rather than a
+// mesh member.
+func (n *Node) IsClient() bool { return n.Role == RoleClient }
+
+// Expired reports whether a client credential has run out. Always false for
+// mesh nodes.
+func (n *Node) Expired() bool {
+	return n.IsClient() && !n.Expires.IsZero() && time.Now().After(n.Expires)
+}
+
+// Usable reports whether this record may appear in generated config. A node
+// without a VIP cannot: every consumer of the node list builds an address from
+// it, and a blank one produces rules like `"ip_cidr": ["/32"]` that sing-box
+// rejects -- which fails config generation for the WHOLE mesh, not just for the
+// node with the bad record.
+func (n *Node) Usable() bool { return !n.IsClient() && n.VIP != "" }
+
 // Path is one way to reach a destination: either straight to the peer, or
 // bounced off a relay.
 type Path struct {
@@ -74,6 +115,14 @@ type JoinToken struct {
 	Reusable bool      `json:"reusable"`
 	Expires  time.Time `json:"expires"`
 	Used     int       `json:"used"`
+
+	// Role is what this token may create. A client token cannot enrol a relay,
+	// so the credential an operator carries around on a laptop cannot be used
+	// to add a machine to the mesh.
+	Role string `json:"role,omitempty"`
+	// ClientTTL bounds the credentials this token issues, when it issues client
+	// ones. Zero means they do not expire.
+	ClientTTL time.Duration `json:"client_ttl,omitempty"`
 }
 
 // State is the whole head database. Small enough to keep in one JSON file --
@@ -82,6 +131,19 @@ type State struct {
 	Nodes  []*Node      `json:"nodes"`
 	Routes []Route      `json:"routes"`
 	Tokens []*JoinToken `json:"tokens"`
+
+	// ClientUUID is the ONE Reality identity every operator client presents.
+	//
+	// Shared on purpose. It is a door, not a key: the relays' generated config
+	// lets this user reach exactly one destination -- the relay's own knot
+	// port -- and rejects everything else, so holding it grants nothing except
+	// the right to knock. The individual credential is checked behind that
+	// door, where changing it costs no restart.
+	//
+	// Generated once and then constant, which is the entire point: a value that
+	// changed per client would put us back to restarting every relay whenever
+	// somebody gets a laptop.
+	ClientUUID string `json:"client_uuid,omitempty"`
 
 	// Defaults applied to newly joined relays.
 	DefaultServerName string `json:"default_server_name"`
@@ -190,7 +252,31 @@ func (st *State) NodeByName(name string) *Node {
 func (st *State) Relays() []*Node {
 	var out []*Node
 	for _, n := range st.Nodes {
-		if n.IsRelay && n.Endpoint != "" {
+		if n.IsRelay && n.Endpoint != "" && n.Usable() {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// MeshNodes returns the records that belong in generated config: mesh members
+// with an address. Clients and half-written records are left out.
+func (st *State) MeshNodes() []*Node {
+	var out []*Node
+	for _, n := range st.Nodes {
+		if n.Usable() {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// Clients returns the operator clients, expired ones included -- the panel has
+// to show those, and only the code that hands out access filters them.
+func (st *State) Clients() []*Node {
+	var out []*Node
+	for _, n := range st.Nodes {
+		if n.IsClient() {
 			out = append(out, n)
 		}
 	}

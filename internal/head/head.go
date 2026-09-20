@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -51,11 +52,27 @@ type failCount struct {
 }
 
 func New(store *model.Store) *Server {
+	// Mint the shared client door once, here, rather than when the first client
+	// joins. Generating it lazily would mean the relays' config changes at that
+	// moment -- a sing-box restart across the mesh, triggered by handing
+	// somebody a laptop credential, which is the exact cost this design exists
+	// to avoid. Minting it at startup folds that one change into the upgrade
+	// that introduced it.
+	if err := store.Write(ensureClientUUID); err != nil {
+		fmt.Fprintln(os.Stderr, "knot: could not store the client door uuid:", err)
+	}
 	return &Server{
 		store:      store,
 		sessions:   map[string]time.Time{},
 		loginFails: map[string]*failCount{},
 	}
+}
+
+func ensureClientUUID(st *model.State) error {
+	if st.ClientUUID == "" {
+		st.ClientUUID = uuidV4()
+	}
+	return nil
 }
 
 func (s *Server) Handler() http.Handler {
@@ -64,6 +81,7 @@ func (s *Server) Handler() http.Handler {
 	// --- node-facing API (authenticated by join token / node key) ---
 	mux.HandleFunc("POST /api/join", s.handleJoin)
 	mux.HandleFunc("GET /api/config", s.handleConfig)
+	mux.HandleFunc("GET /api/client", s.handleClientConfig)
 
 	// --- panel API (authenticated by session cookie) ---
 	mux.HandleFunc("POST /api/login", s.handleLogin)
@@ -99,6 +117,12 @@ type joinResp struct {
 	NodeID string `json:"node_id"`
 	Key    string `json:"key"`
 	VIP    string `json:"vip"`
+	// Role is what the TOKEN decided this enrolment is, not what the caller
+	// asked for -- the caller does not get a say. Returned so the client can
+	// say "that is a node token" instead of silently coming up as something
+	// the operator did not intend.
+	Role    string    `json:"role,omitempty"`
+	Expires time.Time `json:"expires,omitempty"`
 }
 
 // handleJoin enrolls a node. The token is consumed unless it is reusable.
@@ -126,12 +150,19 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 	}
 	var out joinResp
 	err := s.store.Write(func(st *model.State) error {
+		ensureClientUUID(st)
 		tok := findToken(st, req.Token)
 		if tok == nil {
 			return fmt.Errorf("invalid or expired token")
 		}
+		if tok.Role == model.RoleClient {
+			return joinClient(st, tok, req, &out)
+		}
 
 		n := st.NodeByName(req.Name)
+		if n != nil && n.IsClient() {
+			return fmt.Errorf("the name %q already belongs to a client; pick another", req.Name)
+		}
 		if n == nil {
 			vip, err := allocVIP(st)
 			if err != nil {
@@ -167,10 +198,7 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 				n.Fallback = orDefault(st.DefaultFallback, "127.0.0.1:8443")
 			}
 		}
-		tok.Used++
-		if !tok.Reusable {
-			dropToken(st, tok.Token)
-		}
+		spendToken(st, tok)
 		out = joinResp{NodeID: n.ID, Key: n.Key, VIP: n.VIP}
 		return nil
 	})
@@ -179,6 +207,53 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, out)
+}
+
+// joinClient enrols an operator workstation.
+//
+// Deliberately spare: no VIP, no Reality material, no UUID. A client is not in
+// the address space and has no identity of its own on the wire -- it presents
+// the shared door and is then recognised by the key issued here. Allocating it
+// a VIP "just in case" would put it back into every other node's hosts file and
+// routing table, which is precisely what we do not want.
+func joinClient(st *model.State, tok *model.JoinToken, req joinReq, out *joinResp) error {
+	if req.Endpoint != "" {
+		return fmt.Errorf("a client token cannot enrol a relay")
+	}
+	n := st.NodeByName(req.Name)
+	if n != nil && !n.IsClient() {
+		return fmt.Errorf("the name %q already belongs to a mesh node; pick another", req.Name)
+	}
+	if n == nil {
+		n = &model.Node{
+			ID:      randHex(8),
+			Name:    req.Name,
+			Role:    model.RoleClient,
+			Key:     randHex(24),
+			Created: time.Now(),
+		}
+		st.Nodes = append(st.Nodes, n)
+	} else {
+		// Re-joining with a fresh token rotates the key. A laptop that was
+		// revoked and then re-authorised should not keep working on the old
+		// credential it still has on disk.
+		n.Key = randHex(24)
+	}
+	if tok.ClientTTL > 0 {
+		n.Expires = time.Now().Add(tok.ClientTTL)
+	} else {
+		n.Expires = time.Time{}
+	}
+	spendToken(st, tok)
+	*out = joinResp{NodeID: n.ID, Key: n.Key, Role: model.RoleClient, Expires: n.Expires}
+	return nil
+}
+
+func spendToken(st *model.State, tok *model.JoinToken) {
+	tok.Used++
+	if !tok.Reusable {
+		dropToken(st, tok.Token)
+	}
 }
 
 // handleConfig returns the sing-box config plus the hosts block. Nodes poll
@@ -239,6 +314,109 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ---- client bundle -------------------------------------------------------
+
+// clientRelay is one relay an operator client may dial.
+type clientRelay struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	VIP        string `json:"vip"` // where knot's own port lives
+	KnotPort   int    `json:"knot_port"`
+	Endpoint   string `json:"endpoint"` // host:port for the Reality dial
+	ServerName string `json:"server_name"`
+	PublicKey  string `json:"public_key"`
+	ShortID    string `json:"short_id"`
+}
+
+// clientNode is somewhere a forward can point.
+type clientNode struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	VIP     string `json:"vip"`
+	IsRelay bool   `json:"is_relay"`
+}
+
+type clientBundle struct {
+	Name string `json:"name"`
+	// DoorUUID is the shared Reality identity. It is not a secret in the sense
+	// a node uuid is -- on its own it reaches nothing but the relay's knot port.
+	DoorUUID string        `json:"door_uuid"`
+	Expires  time.Time     `json:"expires,omitempty"`
+	Relays   []clientRelay `json:"relays"`
+	Nodes    []clientNode  `json:"nodes"`
+}
+
+// handleClientConfig serves the operator client its bundle.
+//
+// A dedicated endpoint rather than letting clients read /api/config: that
+// response is a node's sing-box config, and a client reading it would be
+// coupled to a format generated for somebody else -- plus it carries Reality
+// PRIVATE keys when the reader is a relay. This hands over exactly what a
+// client needs and nothing more.
+func (s *Server) handleClientConfig(w http.ResponseWriter, r *http.Request) {
+	id, key := r.URL.Query().Get("id"), r.URL.Query().Get("key")
+	var (
+		out     clientBundle
+		authErr error
+	)
+	s.store.WriteVolatile(func(st *model.State) {
+		n := st.NodeByID(id)
+		if n == nil || subtle.ConstantTimeCompare([]byte(n.Key), []byte(key)) != 1 {
+			authErr = fmt.Errorf("unknown client id or wrong key")
+			return
+		}
+		if !n.IsClient() {
+			authErr = fmt.Errorf("%s is a mesh node, not a client", n.Name)
+			return
+		}
+		if n.Expired() {
+			authErr = fmt.Errorf("this client credential expired on %s", n.Expires.Format(time.RFC3339))
+			return
+		}
+		n.LastSeen = time.Now()
+		out = clientBundle{Name: n.Name, DoorUUID: st.ClientUUID, Expires: n.Expires}
+		for _, rl := range st.Relays() {
+			out.Relays = append(out.Relays, clientRelay{
+				ID: rl.ID, Name: rl.Name, VIP: rl.VIP, KnotPort: sb.RelayPort,
+				Endpoint: rl.Endpoint, ServerName: rl.ServerName,
+				PublicKey: rl.RealityPublic, ShortID: rl.ShortID,
+			})
+		}
+		for _, p := range st.MeshNodes() {
+			out.Nodes = append(out.Nodes, clientNode{
+				ID: p.ID, Name: p.Name, VIP: p.VIP,
+				IsRelay: p.IsRelay && p.Endpoint != "",
+			})
+		}
+	})
+	if authErr != nil {
+		httpErr(w, 401, authErr.Error())
+		return
+	}
+	if out.DoorUUID == "" {
+		httpErr(w, 500, "this head has no client door configured")
+		return
+	}
+	if len(out.Relays) == 0 {
+		httpErr(w, 503, "no dialable relay in this mesh")
+		return
+	}
+	body, err := json.Marshal(out)
+	if err != nil {
+		httpErr(w, 500, err.Error())
+		return
+	}
+	sum := sha256.Sum256(body)
+	etag := hex.EncodeToString(sum[:8])
+	if r.Header.Get("If-None-Match") == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(body)
+}
+
 type relayPlan struct {
 	SelfID  string     `json:"self_id"`
 	Key     string     `json:"key"`
@@ -252,6 +430,15 @@ type relayPlan struct {
 	// Hashes rather than the keys themselves so a readable relay state file
 	// does not hand over every node's credential.
 	PeerKeys map[string]string `json:"peer_keys,omitempty"`
+	// ClientKeys is the same thing for operator clients, and the reason this
+	// whole design works: it travels in the PLAN, which relayd swaps in place,
+	// not in the sing-box config, which needs a restart. Issuing or revoking a
+	// laptop is a diff here and costs the mesh nothing.
+	//
+	// Kept apart from PeerKeys rather than merged with a flag, because the two
+	// grant different things: a peer gets a session that can be dialled, a
+	// client gets one that cannot.
+	ClientKeys map[string]string `json:"client_keys,omitempty"`
 	// Names decorates the logs, nothing else. Keyed by BOTH node ID and relay
 	// address, because that is what the two sides have in hand: a relay knows
 	// the peer that said hello only by the ID in its Hello, and a leaf knows an
@@ -280,6 +467,8 @@ func buildPlan(st *model.State, self *model.Node) relayPlan {
 		IsRelay: self.IsRelay && self.Endpoint != "",
 		Socks:   fmt.Sprintf("127.0.0.1:%d", sb.SocksPort),
 	}
+	// Names covers clients too: a relay's log is where "who is connected" gets
+	// answered, and a bare hex id answers it badly.
 	p.Names = map[string]string{}
 	for _, n := range st.Nodes {
 		if n.ID != self.ID && n.Name != "" {
@@ -293,9 +482,15 @@ func buildPlan(st *model.State, self *model.Node) relayPlan {
 		// is exactly what the camouflage exists to avoid.
 		p.Listen = fmt.Sprintf("%s:%d", self.VIP, sb.RelayPort)
 		p.PeerKeys = map[string]string{}
-		for _, n := range st.Nodes {
+		for _, n := range st.MeshNodes() {
 			if n.ID != self.ID && n.Key != "" {
 				p.PeerKeys[n.ID] = hashKey(n.Key)
+			}
+		}
+		p.ClientKeys = map[string]string{}
+		for _, n := range st.Clients() {
+			if n.Key != "" && !n.Expired() {
+				p.ClientKeys[n.ID] = hashKey(n.Key)
 			}
 		}
 	} else {
@@ -314,7 +509,7 @@ func buildPlan(st *model.State, self *model.Node) relayPlan {
 			p.Names[addr] = r.Name
 		}
 	}
-	for _, dst := range st.Nodes {
+	for _, dst := range st.MeshNodes() {
 		if dst.ID == self.ID || (dst.IsRelay && dst.Endpoint != "") {
 			continue // self, or directly dialable
 		}
@@ -503,6 +698,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 				"server_name": n.ServerName, "fallback": n.Fallback,
 				"fallback_proxy_protocol": n.FallbackProxyProtocol,
 				"last_seen":               n.LastSeen, "created": n.Created,
+				"role": n.Role, "expires": n.Expires, "expired": n.Expired(),
 			})
 		}
 		toks := make([]map[string]any, 0, len(st.Tokens))
@@ -510,6 +706,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 			toks = append(toks, map[string]any{
 				"token": t.Token, "reusable": t.Reusable,
 				"expires": t.Expires, "used": t.Used,
+				"role": t.Role, "client_ttl_days": int(t.ClientTTL.Hours() / 24),
 			})
 		}
 		out = map[string]any{
@@ -524,17 +721,28 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleNewToken(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Reusable bool `json:"reusable"`
-		Hours    int  `json:"hours"`
+		Reusable bool   `json:"reusable"`
+		Hours    int    `json:"hours"`
+		Role     string `json:"role"`
+		// ClientDays bounds the credentials a client token issues. 0 = forever.
+		ClientDays int `json:"client_days"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.Hours <= 0 {
 		req.Hours = 24
 	}
+	if req.Role != model.RoleNode && req.Role != model.RoleClient {
+		httpErr(w, 400, fmt.Sprintf("unknown role %q", req.Role))
+		return
+	}
 	t := &model.JoinToken{
 		Token:    randHex(16),
 		Reusable: req.Reusable,
 		Expires:  time.Now().Add(time.Duration(req.Hours) * time.Hour),
+		Role:     req.Role,
+	}
+	if req.Role == model.RoleClient && req.ClientDays > 0 {
+		t.ClientTTL = time.Duration(req.ClientDays) * 24 * time.Hour
 	}
 	s.store.Write(func(st *model.State) error {
 		st.Tokens = append(st.Tokens, t)
@@ -748,7 +956,9 @@ func allocVIP(st *model.State) (string, error) {
 	}
 	taken := map[string]bool{}
 	for _, n := range st.Nodes {
-		taken[n.VIP] = true
+		if n.VIP != "" {
+			taken[n.VIP] = true
+		}
 	}
 	ip := ipnet.IP.To4()
 	if ip == nil {

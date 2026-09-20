@@ -15,8 +15,19 @@ import (
 	"github.com/zbysir/knot/internal/model"
 )
 
+// ClientDoorUser is the name of the one Reality user every operator client
+// presents. The name matters: the relay's route rules match on it (sing-box's
+// `auth_user`), which is what confines that credential to knot's own port.
+const ClientDoorUser = "knot-client"
+
 // Generate builds the sing-box config for one node.
 func Generate(st *model.State, self *model.Node) ([]byte, error) {
+	if self.IsClient() {
+		// Clients build their own config locally; the head has no idea which
+		// local ports they want. Reaching here means somebody wired a client
+		// into the node path.
+		return nil, fmt.Errorf("node %s is a client, not a mesh node", self.Name)
+	}
 	if self.VIP == "" {
 		return nil, fmt.Errorf("node %s has no VIP", self.Name)
 	}
@@ -101,11 +112,27 @@ func realityInbound(st *model.State, n *model.Node) (map[string]any, error) {
 	if n.FallbackProxyProtocol < 0 || n.FallbackProxyProtocol > 2 {
 		return nil, fmt.Errorf("relay %s fallback_proxy_protocol: want 0, 1 or 2, got %d", n.Name, n.FallbackProxyProtocol)
 	}
-	users := make([]any, 0, len(st.Nodes))
-	for _, p := range st.Nodes {
+	users := make([]any, 0, len(st.Nodes)+1)
+	for _, p := range st.MeshNodes() {
 		users = append(users, map[string]any{
 			"name": p.Name,
 			"uuid": p.UUID,
+			"flow": "xtls-rprx-vision",
+		})
+	}
+	// One extra user for every operator client there will ever be.
+	//
+	// Clients are NOT listed individually here, and that is the whole design:
+	// this list lives in the config file, so an entry per client would restart
+	// sing-box on every relay each time a laptop is granted or revoked -- which
+	// drops every live tunnel in the mesh. One constant entry means issuing and
+	// revoking cost nothing at this layer. What stops it from being a skeleton
+	// key is clientDoorRules below, which lets this user reach knot's port and
+	// nothing else; the per-client credential is checked there.
+	if st.ClientUUID != "" {
+		users = append(users, map[string]any{
+			"name": ClientDoorUser,
+			"uuid": st.ClientUUID,
 			"flow": "xtls-rprx-vision",
 		})
 	}
@@ -193,6 +220,16 @@ func routing(st *model.State, self *model.Node) ([]any, []any, error) {
 	}
 	var rules []any
 
+	// The client door's rules come FIRST, before any destination rule.
+	//
+	// Order is load-bearing. The rules below match on destination alone, so a
+	// client asking for another node's mesh address would hit one of them and
+	// be forwarded -- the confinement has to be evaluated before anything that
+	// could route the traffic onwards.
+	if self.IsRelay && self.Endpoint != "" && st.ClientUUID != "" {
+		rules = append(rules, clientDoorRules(self)...)
+	}
+
 	// Deduplicate the physical dials: several destinations may share one relay.
 	dialed := map[string]bool{}
 	addDial := func(peer *model.Node) (string, error) {
@@ -209,7 +246,7 @@ func routing(st *model.State, self *model.Node) ([]any, []any, error) {
 		return tag, nil
 	}
 
-	for _, dst := range st.Nodes {
+	for _, dst := range st.MeshNodes() {
 		if dst.ID == self.ID {
 			continue
 		}
@@ -287,10 +324,31 @@ func routing(st *model.State, self *model.Node) ([]any, []any, error) {
 	return outbounds, rules, nil
 }
 
+// clientDoorRules confine the shared client credential to knot's own relay
+// port on this relay, and reject everything else it asks for.
+//
+// Without the second rule the door is an open proxy: `route.final` is "direct",
+// so anything not matched here would simply be dialled from the relay by
+// whoever holds the shared uuid. The pair must be kept together.
+func clientDoorRules(self *model.Node) []any {
+	return []any{
+		map[string]any{
+			"auth_user": []string{ClientDoorUser},
+			"ip_cidr":   []string{self.VIP + "/32"},
+			"port":      []int{RelayPort},
+			"outbound":  "direct",
+		},
+		map[string]any{
+			"auth_user": []string{ClientDoorUser},
+			"action":    "reject",
+		},
+	}
+}
+
 // Hosts returns the /etc/hosts lines the node agent should maintain.
 func Hosts(st *model.State) string {
 	var sb strings.Builder
-	for _, n := range st.Nodes {
+	for _, n := range st.MeshNodes() {
 		fmt.Fprintf(&sb, "%s %s.knot %s\n", n.VIP, n.Name, n.Name)
 	}
 	return sb.String()
