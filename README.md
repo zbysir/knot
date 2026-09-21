@@ -358,13 +358,43 @@ in the relay plan -- swapped in place by `applyPlan`, restarting nothing.
 ### Install
 
 ```bash
-brew install sing-box            # transport only; the client needs nothing else
-./dist/macos/build-app.sh        # produces dist/macos/build/Knot.app
-cp -r dist/macos/build/Knot.app /Applications/
+brew install sing-box            # transport only; knot does the rest
 ```
 
-Building needs the Swift compiler (`xcode-select --install`). Add
-`--with-singbox` to copy the sing-box binary into the bundle.
+**Command line** (the panel opens in a browser):
+
+```bash
+curl -fsSL https://github.com/zbysir/knot/releases/latest/download/knot_darwin_arm64 -o /usr/local/bin/knot
+chmod +x /usr/local/bin/knot
+knot connect
+```
+
+**Mac app**: take `Knot.app.zip` from
+[Releases](https://github.com/zbysir/knot/releases), move it to Applications,
+and clear the quarantine flag once:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Knot.app
+```
+
+> The app is ad-hoc signed, not notarised -- that needs a $99/year developer
+> account. A **browser download** carries `com.apple.quarantine`, and macOS
+> refuses to open it until the flag is gone.
+>
+> This is not about it being an app: the same CLI binary is blocked too if you
+> download it with a browser, and is not if you use curl. The difference is the
+> download tool, not the file.
+
+**Building it yourself** needs the Swift compiler (`xcode-select --install`):
+
+```bash
+./dist/macos/build-app.sh
+cp -R dist/macos/build/Knot.app /Applications/
+```
+
+Nothing built locally is quarantined, so that `xattr` line is not needed. Add
+`--with-singbox` to copy the sing-box binary into the bundle -- note it is 81 MB
+and single-architecture, taking the app from 15 MB to about 96.
 
 It is an ordinary Mac app: dock icon, cmd-Q to quit. **Closing the window does
 not drop the tunnels** -- the forwards keep running and the dock icon (or cmd-0)

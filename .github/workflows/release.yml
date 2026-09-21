@@ -1,0 +1,174 @@
+name: release
+
+# Tag-driven. `git tag v0.2.0 && git push --tags` builds everything and opens a
+# release with it.
+on:
+  push:
+    tags: ['v*']
+  # Manual runs build everything and stop short of publishing, so "does this
+  # still compile on a clean macOS runner" is answerable without cutting a
+  # release nobody wanted.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # macOS, because the app needs swiftc, lipo, iconutil and codesign. Go
+    # cross-compiles the Linux binaries from here just as well, so one job
+    # produces everything and nothing has to be passed between jobs.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - run: go test ./...
+
+      - id: v
+        run: echo "version=${GITHUB_REF_NAME#v}" >>"$GITHUB_OUTPUT"
+
+      # --- the CLI -------------------------------------------------------
+      #
+      # Plain binaries rather than archives: the install line is a curl and a
+      # chmod, and curl does not set com.apple.quarantine -- so a CLI arrives
+      # ready to run. A browser download of the very same file would not; see
+      # the release notes below.
+      - name: Build CLI
+        run: |
+          mkdir -p out
+          for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
+            os="${target%/*}"; arch="${target#*/}"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+              go build -trimpath -ldflags="-s -w" -o "out/knot_${os}_${arch}" .
+          done
+
+      # --- the app -------------------------------------------------------
+      - name: Build Knot.app
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: ./dist/macos/build-app.sh
+
+      # ditto, not zip: it is what Apple's own tooling uses for bundles, and it
+      # keeps the symlinks and metadata a .app needs to still be a .app on the
+      # other side.
+      - name: Package Knot.app
+        run: ditto -c -k --keepParent dist/macos/build/Knot.app out/Knot.app.zip
+
+      # --- optional: Developer ID signing and notarisation ----------------
+      #
+      # Skipped unless the secrets exist, so the workflow is green without an
+      # Apple Developer account. NOTE: this path has never run -- it is here so
+      # the day somebody buys the $99 account is a matter of filling in four
+      # secrets rather than researching notarytool from scratch. Expect to
+      # iterate on it once, not to have it work first try.
+      #
+      # MACOS_CERT_P12         base64 of a Developer ID Application .p12
+      # MACOS_CERT_PASSWORD    its password
+      # MACOS_SIGN_IDENTITY    e.g. "Developer ID Application: Name (TEAMID)"
+      # MACOS_NOTARY_PROFILE   json for `notarytool store-credentials`, or use
+      #                        APPLE_ID / TEAM_ID / APP_PASSWORD below
+      - id: signing
+        env:
+          CERT: ${{ secrets.MACOS_CERT_P12 }}
+        run: |
+          if [ -n "$CERT" ]; then echo "ok=true" >>"$GITHUB_OUTPUT"; else
+            echo "ok=false" >>"$GITHUB_OUTPUT"
+            echo "::notice::MACOS_CERT_P12 not set -- shipping an ad-hoc signed app"
+          fi
+
+      - name: Sign and notarise
+        if: steps.signing.outputs.ok == 'true'
+        env:
+          CERT: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          echo "$CERT" | base64 --decode > /tmp/cert.p12
+          security create-keychain -p actions build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p actions build.keychain
+          security import /tmp/cert.p12 -k build.keychain -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k actions build.keychain
+          APP=dist/macos/build/Knot.app
+          # Inside out: nested code first, the bundle last.
+          for f in "$APP"/Contents/MacOS/*; do
+            codesign --force --options runtime --timestamp --sign "$IDENTITY" "$f"
+          done
+          codesign --force --options runtime --timestamp --sign "$IDENTITY" "$APP"
+          ditto -c -k --keepParent "$APP" out/Knot.app.zip
+          xcrun notarytool submit out/Knot.app.zip \
+            --apple-id "$APPLE_ID" --team-id "$TEAM_ID" --password "$APP_PASSWORD" --wait
+          xcrun stapler staple "$APP"
+          rm -f out/Knot.app.zip
+          ditto -c -k --keepParent "$APP" out/Knot.app.zip
+
+      - name: Checksums
+        run: cd out && shasum -a 256 * > SHA256SUMS
+
+      - name: Release notes
+        env:
+          SIGNED: ${{ steps.signing.outputs.ok }}
+          V: ${{ steps.v.outputs.version }}
+        run: |
+          {
+            echo "## 装客户端"
+            echo
+            echo '```bash'
+            echo "brew install sing-box    # 数据面，客户端只用它做传输"
+            echo '```'
+            echo
+            echo "### 命令行"
+            echo
+            echo '```bash'
+            echo "curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/knot_darwin_arm64 -o /usr/local/bin/knot"
+            echo "chmod +x /usr/local/bin/knot"
+            echo "knot connect"
+            echo '```'
+            echo
+            echo "Intel Mac 换 \`knot_darwin_amd64\`。用 curl 下载不会被打上"
+            echo "\`com.apple.quarantine\`，所以直接就能跑。"
+            echo
+            echo "### Mac App"
+            echo
+            echo "下载 \`Knot.app.zip\`，解压后拖进「应用程序」。"
+            if [ "$SIGNED" != "true" ]; then
+              echo
+              echo "> ⚠️ 这个 App 只有临时签名，没有 Apple 公证。浏览器下载的文件会被打上"
+              echo "> \`com.apple.quarantine\`，双击会弹「Apple 无法验证…」。解除一次即可："
+              echo ">"
+              echo "> \`\`\`bash"
+              echo "> xattr -dr com.apple.quarantine /Applications/Knot.app"
+              echo "> \`\`\`"
+              echo ">"
+              echo "> 这不是 App 的问题，同一个二进制用 curl 下载就没有这一步 —— 区别在下载工具，"
+              echo "> 不在文件本身。"
+            fi
+            echo
+            echo "### 服务端"
+            echo
+            echo "\`bysir/knot:sha-<commit>\`，见 [部署说明](https://github.com/${GITHUB_REPOSITORY}#部署)。"
+          } > out/NOTES.md
+
+      - name: Upload build (manual runs)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: knot-build
+          path: out/
+
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          body_path: out/NOTES.md
+          files: |
+            out/knot_*
+            out/Knot.app.zip
+            out/SHA256SUMS

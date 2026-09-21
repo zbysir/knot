@@ -315,14 +315,44 @@ knot: relay: session to 10.88.0.1:9997 up                    <- mesh 起来了
 
 ### 装
 
+两样东西都要：`sing-box` 做传输，knot 本体做别的。
+
 ```bash
-brew install sing-box            # 数据面，客户端只用它做传输
+brew install sing-box
+```
+
+**命令行**（面板在浏览器里开）：
+
+```bash
+curl -fsSL https://github.com/zbysir/knot/releases/latest/download/knot_darwin_arm64 -o /usr/local/bin/knot
+chmod +x /usr/local/bin/knot
+knot connect
+```
+
+**Mac App**：从 [Releases](https://github.com/zbysir/knot/releases) 下 `Knot.app.zip`，
+拖进「应用程序」，然后解除一次隔离标记：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Knot.app
+```
+
+> 这个 App 只有临时签名，没有 Apple 公证（那需要 $99/年的开发者账号）。
+> **浏览器下载的文件**会被打上 `com.apple.quarantine`，双击会弹「Apple 无法验证…」。
+> 上面那条命令解除一次就好。
+>
+> 注意这和「是不是 App」无关：同一个命令行二进制，用浏览器下载一样会被拦，
+> 用 curl 下载就不会 —— 区别在下载工具有没有打标记，不在文件本身。
+
+**自己构建**（需要 Xcode 命令行工具，`xcode-select --install`）：
+
+```bash
 ./dist/macos/build-app.sh        # 产出 dist/macos/build/Knot.app
 cp -R dist/macos/build/Knot.app /Applications/
 ```
 
-构建需要 Swift 编译器（Xcode 命令行工具，`xcode-select --install`）。
+本地构建出来的没有隔离标记，不需要上面那条 `xattr`。
 想连 sing-box 一起打进去（目标机器不装 brew）：`./dist/macos/build-app.sh --with-singbox`
+—— 注意 sing-box 有 81 MB，App 会从 15 MB 涨到 ~96 MB，而且只有一个架构。
 
 装好在 Launchpad 里搜 **Knot**。这是一个普通的 Mac App：Dock 里有图标，
 ⌘Q 退出。**关掉窗口不会断隧道** —— 转发继续跑，点 Dock 图标或 ⌘0 把窗口叫回来。
