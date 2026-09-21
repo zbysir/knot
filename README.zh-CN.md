@@ -318,17 +318,30 @@ knot: relay: session to 10.88.0.1:9997 up                    <- mesh 起来了
 ```bash
 brew install sing-box            # 数据面，客户端只用它做传输
 ./dist/macos/build-app.sh        # 产出 dist/macos/build/Knot.app
-cp -r dist/macos/build/Knot.app /Applications/
+cp -R dist/macos/build/Knot.app /Applications/
 ```
 
+构建需要 Swift 编译器（Xcode 命令行工具，`xcode-select --install`）。
 想连 sing-box 一起打进去（目标机器不装 brew）：`./dist/macos/build-app.sh --with-singbox`
 
-双击图标即可。面板是一个本地网页，自动打开 <http://127.0.0.1:8765>。
-它是后台程序，没有 Dock 图标 —— **从面板右上角的「退出」退出**。
-命令行跑法一样：
+装好在 Launchpad 里搜 **Knot**。这是一个普通的 Mac App：Dock 里有图标，
+⌘Q 退出。**关掉窗口不会断隧道** —— 转发继续跑，点 Dock 图标或 ⌘0 把窗口叫回来。
+
+bundle 里是两个可执行文件：`Knot` 是 AppKit 外壳（窗口 + 菜单），
+`knot-helper` 是它拉起来的 knot 本体。外壳退出时会结束 helper；
+反过来 helper 也盯着父进程，外壳崩了它自己也走，不会留下一个占着端口、
+却没有任何窗口能关掉它的孤儿进程。
+
+不想用 App 的话，同一个二进制在终端里跑是一样的：
 
 ```bash
 knot connect [--ui 127.0.0.1:8765] [--data ~/.knot] [--singbox PATH] [--no-open]
+```
+
+App 也会把启动参数透传给 helper，可以开一个配置独立的实例：
+
+```bash
+open -a Knot --args --data ~/.knot-staging --ui 127.0.0.1:8766
 ```
 
 > **升级顺序：先 head，再中继。** 客户端要等中继也升级完才能接入 —— 旧的中继

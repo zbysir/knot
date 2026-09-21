@@ -71,7 +71,6 @@ func (a *Agent) serveUI(ctx context.Context) (net.Listener, error) {
 	mux.HandleFunc("POST /api/disconnect", a.guard(a.handleDisconnect))
 	mux.HandleFunc("POST /api/forward", a.guard(a.handleForward))
 	mux.HandleFunc("POST /api/forward/delete", a.guard(a.handleForwardDelete))
-	mux.HandleFunc("POST /api/quit", a.guard(a.handleQuit))
 
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go srv.Serve(ln)
@@ -312,17 +311,6 @@ func (a *Agent) handleForwardDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	a.applyForwards()
 	writeJSON(w, map[string]any{"ok": true})
-}
-
-func (a *Agent) handleQuit(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]any{"ok": true})
-	go func() {
-		// Let the response reach the browser before the process goes away.
-		time.Sleep(200 * time.Millisecond)
-		if a.stop != nil {
-			a.stop()
-		}
-	}()
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

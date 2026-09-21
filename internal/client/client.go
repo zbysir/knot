@@ -80,9 +80,6 @@ type Agent struct {
 	LogTo io.Writer
 
 	log *ring
-	// stop ends Run. The panel's quit button is the only way out of a bundled
-	// .app, which has no terminal to Ctrl-C and no dock icon to right-click.
-	stop context.CancelFunc
 
 	// mu guards everything below. Every mutation arrives either from a UI
 	// request goroutine or from the poll loop, so none of it is single
@@ -161,7 +158,6 @@ func (a *Agent) cfgPath() string    { return filepath.Join(a.DataDir, "singbox.j
 func (a *Agent) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	a.stop = cancel
 	if err := os.MkdirAll(a.DataDir, 0o700); err != nil {
 		return err
 	}

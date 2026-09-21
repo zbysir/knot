@@ -363,10 +363,24 @@ brew install sing-box            # transport only; the client needs nothing else
 cp -r dist/macos/build/Knot.app /Applications/
 ```
 
-Add `--with-singbox` to copy the sing-box binary into the bundle. The app is a
-background agent with no dock icon: its UI is a local page at
-<http://127.0.0.1:8765>, and you quit it from there. The same thing runs from a
-terminal as `knot connect [--ui ADDR] [--data DIR] [--singbox PATH] [--no-open]`.
+Building needs the Swift compiler (`xcode-select --install`). Add
+`--with-singbox` to copy the sing-box binary into the bundle.
+
+It is an ordinary Mac app: dock icon, cmd-Q to quit. **Closing the window does
+not drop the tunnels** -- the forwards keep running and the dock icon (or cmd-0)
+brings the window back.
+
+The bundle holds two executables: `Knot`, the AppKit shell that owns the window
+and the menu bar, and `knot-helper`, the knot binary it runs as a child. The
+shell ends the helper when it quits, and the helper watches its parent so a
+crashed shell cannot leave an orphan holding the panel port and every forward
+with no window to close it from.
+
+The same binary runs from a terminal as
+`knot connect [--ui ADDR] [--data DIR] [--singbox PATH] [--no-open]`, and the app
+forwards its own launch arguments, so
+`open -a Knot --args --data ~/.knot-staging --ui 127.0.0.1:8766` gives you a
+second profile.
 
 > **Upgrade the head before the relays.** A relay still on an older binary does
 > not know about `ClientKeys` and will refuse a client at the handshake.
