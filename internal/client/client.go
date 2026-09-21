@@ -75,8 +75,24 @@ const Poll = 30 * time.Second
 // again.
 const applyRetry = 15 * time.Second
 
+// Enrol is a join the process performs by itself on first run.
+//
+// The panel is the way a person joins, and it only ever listens on loopback --
+// which inside a container is the container's own loopback, reachable by
+// nobody. Without this a containerised client could not be joined at all
+// without exec-ing into it.
+//
+// Ignored once an identity exists, so restarting does not spend another token.
+type Enrol struct {
+	Head     string
+	Token    string
+	Name     string
+	Insecure bool
+}
+
 type Agent struct {
-	DataDir string // default ~/.knot
+	DataDir string // default $KNOT_DATA, else ~/.knot
+	Enrol   Enrol  // optional: join from configuration rather than from the panel
 	SingBox string // optional path override; otherwise discovered
 	UIAddr  string // where the local panel listens
 	OpenUI  bool   // open a browser once the panel is up
@@ -147,7 +163,16 @@ func New() *Agent {
 	}
 }
 
+// defaultDataDir follows KNOT_DATA when it is set, as the head and the node do.
+//
+// In a container that is the whole difference between state on the volume and
+// state in /root/.knot, which goes away with the container and takes the
+// identity with it -- so the next start spends another join token, or has none
+// and sits there unjoined.
 func defaultDataDir() string {
+	if d := os.Getenv("KNOT_DATA"); d != "" {
+		return d
+	}
 	h, err := os.UserHomeDir()
 	if err != nil {
 		return ".knot"
@@ -196,10 +221,18 @@ func (a *Agent) Run(ctx context.Context) error {
 		exec.Command("open", a.PanelURL()).Start()
 	}
 
-	if a.joined() {
+	enrolled := false
+	if !a.joined() && a.Enrol.Head != "" && a.Enrol.Token != "" {
+		if err := a.Join(ctx, a.Enrol.Head, a.Enrol.Token, a.Enrol.Name, a.Enrol.Insecure); err != nil {
+			a.setErr("自动接入失败: %v", err)
+		} else {
+			enrolled = true // Join already connected; do not do it twice
+		}
+	}
+	if a.joined() && !enrolled {
 		// A failure here is not fatal: the panel is up, it will say what went
-		// wrong, and the loop below retries. Exiting would leave the operator
-		// with a dead icon and no way to see why.
+		// wrong, and the loop below retries. Exiting would leave somebody with
+		// a dead icon and no way to see why.
 		if err := a.connect(ctx); err != nil {
 			a.setErr("连接失败: %v", err)
 		}

@@ -59,6 +59,25 @@ task, so a `mode: global` service gives every machine its own node name.
 `KNOT_ENDPOINT`, and one service definition cannot vary it per host. Run relays
 as a separate service with a placement constraint, or just `docker run` them.
 
+## The client
+
+`knot connect` needs **none** of the three things above. There is no tun device,
+so there is nothing to grant: no `/dev/net/tun`, no `CAP_NET_ADMIN`, no host
+namespace for privilege reasons. Verified by running it with
+`Privileged=false CapAdd=[] Devices=[]` and no tun in the container at all.
+
+It does want `--network host`, for a different reason. The panel and every
+forward bind loopback deliberately, and in a container that loopback belongs to
+the container -- unreachable from outside, and `-p` cannot bridge it because
+publishing maps eth0 rather than lo.
+
+`KNOT_HEAD` + `KNOT_TOKEN` join it without anybody opening the panel, which is
+the only way to join a container: the panel it would be done through is behind
+that same loopback. Set `KNOT_DATA=/var/lib/knot` so the identity lands on the
+volume; the default is `~/.knot`, which in a container is thrown away with it.
+
+See the client section in the [main README](../README.md) for the full command.
+
 ## The head
 
 The head has no special requirements — it is an ordinary HTTP service and is

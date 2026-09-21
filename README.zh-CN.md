@@ -390,6 +390,37 @@ knot connect --no-open          # 没有浏览器可开，也不该开
 面板只监听回环，所以要看的话走 SSH 隧道：`ssh -N -L 8765:127.0.0.1:8765 <host>`。
 转发配好之后存在 `~/.knot/state.json`，进程起来就自动恢复，可以直接丢给 systemd。
 
+#### Docker
+
+同一个镜像，换个子命令。**节点必须有的三样，客户端一样都不要** ——
+没有 tun 设备、不需要 `CAP_NET_ADMIN`、不需要特权：
+
+```bash
+docker run -d --name knot-client --restart=always \
+  --network host \
+  -e KNOT_HEAD=https://knot.example.com \
+  -e KNOT_TOKEN=<客户端令牌> \
+  -e KNOT_NAME="$(hostname)" \
+  -e KNOT_DATA=/var/lib/knot \
+  -v knot-client:/var/lib/knot \
+  bysir/knot:sha-xxxxxxx connect --no-open
+```
+
+`KNOT_HEAD` + `KNOT_TOKEN` 是**给没人开面板的场合准备的**：第一次启动自己接入，
+之后身份存在卷里，重启不会再花一次令牌。
+
+> **`--network host` 是必须的，但不是为了权限。** 面板和转发都只绑回环 —— 这是
+> 故意的，那后面是一条通往生产的活路。在普通容器里那个回环是**容器自己的**，
+> 外面谁都够不着；而 `-p` 也救不了，它映射的是容器的 eth0，不是它的 lo。
+>
+> 所以要么 `--network host`（Linux 上就是宿主机回环，该保护的还是被保护着），
+> 要么就只能 `docker exec` 进去用。
+
+`KNOT_DATA` 别忘了：不写的话客户端默认 `~/.knot`，在容器里是 `/root/.knot` ——
+不在卷上，容器一重建身份就没了，下次启动又要花一个令牌。
+
+转发还是在面板里配（服务器上走 SSH 隧道开），配完存在状态文件里，跟着进程回来。
+
 > **升级顺序：先 head，再中继。** 客户端要等中继也升级完才能接入 —— 旧的中继
 > 二进制不认识 `ClientKeys`，会在握手时拒绝它。
 >

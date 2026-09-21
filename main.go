@@ -82,9 +82,13 @@ const usage = `knot -- mesh networking with a Reality data plane
       KNOT_SINGBOX       sing-box binary path              (default sing-box)
       KNOT_POLL          config poll interval              (default 10s, min 1s)
 
-  knot connect           read-only client: local panel + port forwards, no tun
+  knot connect           client: reaches the mesh without joining it, no tun
+      KNOT_HEAD          head URL, for joining without the panel
+      KNOT_TOKEN         client join token, first run only
+      KNOT_NAME          client name                       (default hostname)
+      KNOT_DATA          state directory                   (default ~/.knot)
       --ui ADDR          panel listen address              (default 127.0.0.1:8765)
-      --data DIR         state directory                   (default ~/.knot)
+      --data DIR         state directory, overrides KNOT_DATA
       --singbox PATH     sing-box binary                   (default: found on PATH)
       --no-open          do not open a browser at startup
       --exit-with-parent quit when the process that launched this one does
@@ -176,6 +180,15 @@ func runNode() error {
 // a container runtime that only knows how to set the environment.
 func runConnect(args []string) error {
 	a := client.New()
+	// Environment for the unattended case -- a container, or anything else
+	// with nobody to open the panel. Flags still win, and an existing identity
+	// wins over both.
+	a.Enrol = client.Enrol{
+		Head:     strings.TrimRight(os.Getenv("KNOT_HEAD"), "/"),
+		Token:    os.Getenv("KNOT_TOKEN"),
+		Name:     os.Getenv("KNOT_NAME"),
+		Insecure: os.Getenv("KNOT_INSECURE") == "1",
+	}
 	exitWithParent := false
 	for i := 0; i < len(args); i++ {
 		next := func() (string, error) {

@@ -432,6 +432,42 @@ The panel only ever listens on loopback, so reach it over ssh when you need it:
 `ssh -N -L 8765:127.0.0.1:8765 <host>`. Forwards live in `~/.knot/state.json`
 and come back with the process, so it hands to systemd as it is.
 
+#### Docker
+
+Same image, different subcommand. **A client needs none of the three things a
+node does**: no tun device, no `CAP_NET_ADMIN`, nothing privileged.
+
+```bash
+docker run -d --name knot-client --restart=always \
+  --network host \
+  -e KNOT_HEAD=https://knot.example.com \
+  -e KNOT_TOKEN=<client token> \
+  -e KNOT_NAME="$(hostname)" \
+  -e KNOT_DATA=/var/lib/knot \
+  -v knot-client:/var/lib/knot \
+  bysir/knot:sha-xxxxxxx connect --no-open
+```
+
+`KNOT_HEAD` and `KNOT_TOKEN` exist for the case where nobody is going to open
+the panel: the first start joins by itself, and the identity is on the volume
+afterwards, so a restart does not spend another token.
+
+> **`--network host` is required, and not for privilege.** The panel and the
+> forwards bind loopback on purpose -- what is behind them is a live path into
+> production. In an ordinary container that loopback is the *container's*, which
+> nothing outside can reach, and `-p` does not help: publishing maps the
+> container's eth0, not its lo.
+>
+> So either host networking (on Linux that is the host's loopback, and what was
+> protected still is), or `docker exec` for everything.
+
+Do not omit `KNOT_DATA`. Without it a client defaults to `~/.knot`, which in a
+container is `/root/.knot` -- off the volume, gone with the container, and the
+next start spends another join token.
+
+Forwards are still configured in the panel (over an ssh tunnel on a server) and
+live in the state file, so they come back with the process.
+
 > **Upgrade the head before the relays.** A relay still on an older binary does
 > not know about `ClientKeys` and will refuse a client at the handshake.
 >
