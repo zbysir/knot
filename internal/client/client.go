@@ -101,6 +101,10 @@ type Agent struct {
 	// presenting the revoked credential for ever, and the relay would keep
 	// refusing it. Found exactly that way.
 	sessFor string
+	// sessSince is when the current sessions were started. A session takes a
+	// moment to come up, and without knowing when it began the panel cannot
+	// tell "still connecting" from "connected to nothing".
+	sessSince time.Time
 
 	uiAddr    string // the address the panel actually bound
 	status    string
@@ -574,6 +578,11 @@ func (a *Agent) startSessions(ctx context.Context) {
 		NodeID: st.NodeID,
 		Key:    st.Key,
 		Logf:   a.logf,
+		// sing-box has only just been forked and has not bound its listeners
+		// yet, so the first dial is expected to be refused. A one-second first
+		// retry meant every reconnect spent about four seconds in the backoff
+		// rather than on anything real.
+		Backoff: 250 * time.Millisecond,
 		// We are a client: nothing may be pushed down at us. The relay does not
 		// register us anywhere it could be pushed FROM, so this is the second
 		// lock on the same door.
@@ -600,6 +609,7 @@ func (a *Agent) startSessions(ctx context.Context) {
 	a.mu.Lock()
 	a.rc, a.sessCancel = rc, cancel
 	a.sessFor = identityOf(st)
+	a.sessSince = time.Now()
 	a.mu.Unlock()
 }
 
@@ -610,6 +620,7 @@ func (a *Agent) stopSessions() {
 	a.mu.Lock()
 	cancel := a.sessCancel
 	a.rc, a.sessCancel, a.sessFor = nil, nil, ""
+	a.sessSince = time.Time{}
 	a.mu.Unlock()
 	if cancel != nil {
 		cancel()

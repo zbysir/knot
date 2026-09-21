@@ -309,6 +309,11 @@ type Client struct {
 	Logf func(format string, v ...any)
 	// NameOf, when set, names a relay address for the logs.
 	NameOf func(string) string
+	// Backoff is the first retry delay; it doubles from there. Zero means one
+	// second, which is right for a relay across the internet and far too slow
+	// for one reached over loopback -- a client dials the port its own sing-box
+	// listens on, and that either answers or is not up yet.
+	Backoff time.Duration
 	// NoInbound refuses streams the relay pushes down, for an operator client
 	// that must not be reachable.
 	//
@@ -352,7 +357,7 @@ const noteRepeatAfter = 5 * time.Minute
 // node when nothing was wrong. Now that wait says it is a wait, once.
 func (c *Client) Maintain(ctx context.Context, relayID string) {
 	name := func() string { return c.name(relayID) }
-	backoff := time.Second
+	backoff := c.firstBackoff()
 
 	// note prints only when the situation changes, or when it has been saying the
 	// same thing for a while.
@@ -370,8 +375,12 @@ func (c *Client) Maintain(ctx context.Context, relayID string) {
 	for ctx.Err() == nil {
 		start := time.Now()
 		opened, err := c.once(ctx, relayID, func() {
-			note("relay: session to %s established", name())
-			backoff = time.Second
+			// Says when, because this line is printed acceptedAfter late by
+			// design and reads as "just now". Timing a reconnect from it gives
+			// an answer three seconds too slow -- which is exactly how one got
+			// misdiagnosed as a four-second stall that was really half of one.
+			note("relay: session to %s established (confirmed after %s)", name(), acceptedAfter)
+			backoff = c.firstBackoff()
 		})
 		if ctx.Err() != nil {
 			return
@@ -398,6 +407,14 @@ func (c *Client) Maintain(ctx context.Context, relayID string) {
 			backoff *= 2
 		}
 	}
+}
+
+// firstBackoff is the delay before the first retry; it doubles from there.
+func (c *Client) firstBackoff() time.Duration {
+	if c.Backoff > 0 {
+		return c.Backoff
+	}
+	return time.Second
 }
 
 // once holds one session open until it breaks. The bool reports whether the

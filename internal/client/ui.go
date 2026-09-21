@@ -126,6 +126,11 @@ func (a *Agent) guard(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// sessGrace is how long a freshly started session may take before the panel
+// stops calling it progress. Generous on purpose: it covers sing-box binding
+// its listeners, a Reality handshake across an ocean, and a relay that is busy.
+const sessGrace = 20 * time.Second
+
 // ------------------------------------------------------------------- views
 
 type uiRelay struct {
@@ -141,16 +146,20 @@ type uiForward struct {
 }
 
 type uiState struct {
-	Joined   bool         `json:"joined"`
-	Head     string       `json:"head"`
-	Name     string       `json:"name"`
-	Status   string       `json:"status"`
-	Error    string       `json:"error,omitempty"`
-	SingBox  bool         `json:"singbox"`
-	Relays   []uiRelay    `json:"relays"`
-	Nodes    []BundleNode `json:"nodes"`
-	Forwards []uiForward  `json:"forwards"`
-	Logs     []string     `json:"logs"`
+	Joined bool   `json:"joined"`
+	Head   string `json:"head"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	// Connecting says the tunnel is on its way up rather than failed. Without
+	// it the panel shows the same words for "give it a second" and "this is not
+	// working", which is the difference somebody staring at it actually wants.
+	Connecting bool         `json:"connecting"`
+	Error      string       `json:"error,omitempty"`
+	SingBox    bool         `json:"singbox"`
+	Relays     []uiRelay    `json:"relays"`
+	Nodes      []BundleNode `json:"nodes"`
+	Forwards   []uiForward  `json:"forwards"`
+	Logs       []string     `json:"logs"`
 }
 
 func (a *Agent) handleState(w http.ResponseWriter, r *http.Request) {
@@ -170,7 +179,9 @@ func (a *Agent) handleState(w http.ResponseWriter, r *http.Request) {
 	// "已连接" means sing-box started, which is not the same as being able to
 	// reach anything: a revoked credential leaves every session closed while
 	// the process runs happily. Report what the sessions actually say, so the
-	// panel does not claim a tunnel that is not there.
+	// panel does not claim a tunnel that is not there -- but give a session
+	// that has only just been started the time it needs, or every reconnect
+	// reads as a failure for the second or two before it lands.
 	if out.Status == "已连接" {
 		up := 0
 		for _, r := range a.bundle.Relays {
@@ -179,8 +190,14 @@ func (a *Agent) handleState(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if up == 0 {
-			out.Status = "隧道未建立"
+			if !a.sessSince.IsZero() && time.Since(a.sessSince) < sessGrace {
+				out.Status, out.Connecting = "连接中", true
+			} else {
+				out.Status = "隧道未建立"
+			}
 		}
+	} else if out.Status == "连接中" {
+		out.Connecting = true
 	}
 	// Relays are projected, never marshalled directly: the Relay struct carries
 	// the shared door uuid and the relays' Reality material, and none of that

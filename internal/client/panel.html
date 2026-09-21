@@ -90,6 +90,11 @@ a{color:var(--brand);text-decoration:none}
 .dot{display:inline-block;width:7px;height:7px;border-radius:999px;margin-right:7px;
   vertical-align:middle;flex:none}
 .dot.on{background:var(--ok)} .dot.off{background:var(--faint)} .dot.bad{background:var(--bad)}
+/* 进行中用 warn 黄，不用绿 —— 绿在这套界面里已经是「已连接 / 在跑」的意思，
+   一行里同时出现绿点和绿字，谁是谁分不出来。脉冲是「还在动」的唯一线索。 */
+.dot.work{background:var(--warn);animation:pulse 1.1s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.work{color:var(--warn)}
 .on{color:var(--ok)} .off{color:var(--warn)} .bad{color:var(--bad)}
 
 /* ---- 转发列表 ----
@@ -171,8 +176,8 @@ tr:last-child td{border-bottom:0;padding-bottom:0}
   <span class="sub" id="meta"></span>
   <span style="flex:1"></span>
   <span id="statePill"></span>
-  <button onclick="act('/api/reconnect')">重连</button>
-  <button onclick="act('/api/disconnect')">断开</button>
+  <button id="btnRe" onclick="act('/api/reconnect', this, '重连中…')">重连</button>
+  <button id="btnDis" onclick="act('/api/disconnect', this, '断开中…')">断开</button>
 </header>
 <main>
 
@@ -254,8 +259,9 @@ function render() {
 
   meta.textContent = `${S.name} @ ${S.head}`;
   const ok = S.status === '已连接' && S.singbox;
-  statePill.innerHTML = `<span class="dot ${ok ? 'on' : (S.error ? 'bad' : 'off')}"></span>` +
-    `<span class="sub">${esc(S.status)}</span>`;
+  const dot = S.connecting ? 'work' : ok ? 'on' : S.error ? 'bad' : 'off';
+  statePill.innerHTML = `<span class="dot ${dot}"></span>` +
+    `<span class="${S.connecting ? 'work' : 'sub'}">${esc(S.status)}</span>`;
   gErr.textContent = S.error || '';
 
   renderForwards();
@@ -295,8 +301,10 @@ function renderForwards() {
 function renderNodes() {
   nodeBody.innerHTML = (S.nodes || []).map(n => {
     const r = (S.relays || []).find(r => r.name === n.name);
-    const sess = r ? (r.up ? '<span class="on">● 会话已建立</span>'
-                          : '<span class="off">○ 未连接</span>') : '';
+    const sess = !r ? ''
+      : r.up ? '<span class="on">● 会话已建立</span>'
+      : S.connecting ? '<span class="work"><span class="dot work"></span>连接中</span>'
+      : '<span class="off">○ 未连接</span>';
     return `<tr>
       <td>${esc(n.name)}</td>
       <td><code>${esc(n.vip)}</code></td>
@@ -393,8 +401,16 @@ async function join() {
   sBtn.disabled = false;
 }
 
-async function act(path) {
+// act 把按钮本身变成进度条。这个 POST 一直阻塞到 connect() 返回 —— 包含一次到
+// head 的 HTTP 往返 —— 点下去之后没有任何反馈的话，看起来就像没点着。
+async function act(path, btn, label) {
+  const old = btn.textContent;
+  btn.textContent = label;
+  btnRe.disabled = btnDis.disabled = true;
+  gErr.textContent = '';
   try { await api(path, {}); } catch (e) { gErr.textContent = e.message; }
+  btn.textContent = old;
+  btnRe.disabled = btnDis.disabled = false;
   refresh();
 }
 
