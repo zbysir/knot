@@ -1,9 +1,15 @@
-// Package client is the ops-workstation side of knot.
+// Package client reaches the network without joining it.
 //
-// It is NOT a mesh member. It holds no mesh address, runs no tun device, and is
-// not reachable by anything: it joins the head with a client token, obtains a
-// credential, and opens plain local TCP listeners that it carries to a chosen
-// machine over the relay protocol.
+// A client is not a mesh member: no address, unreachable, and forwarding for
+// nobody. It joins the head with a client token, obtains a credential, and
+// opens plain local TCP listeners that it carries to a machine of its choosing
+// over the relay protocol.
+//
+// What it is FOR is deliberately not in that definition. Reaching a production
+// database from a laptop is one use; a server that needs one port out of the
+// network and has no business being a member of it is another, and equally
+// ordinary. The role is "connects in, is not part of it" -- nothing about
+// debugging, and nothing about who is typing.
 //
 // Three layers, and the split is what makes the thing behave:
 //

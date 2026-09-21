@@ -26,7 +26,7 @@ type Plan struct {
 	Peers   []PlanPeer `json:"peers"`
 	// PeerKeys maps node ID -> sha256(key). Relays only.
 	PeerKeys map[string]string `json:"peer_keys,omitempty"`
-	// ClientKeys is the same for read-only operator clients. Relays only.
+	// ClientKeys is the same for read-only clients. Relays only.
 	ClientKeys map[string]string `json:"client_keys,omitempty"`
 	// Names maps node ID -> name AND relay address -> name, for the logs. A plan
 	// cached by an older node has none, and every lookup then falls back to the

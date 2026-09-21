@@ -84,9 +84,9 @@ td.dirty input{border-color:#3b82f6}
     </div>
     <div class="hint" id="jHint" style="margin:0 0 8px"></div>
     <div class="hint" style="margin:0 0 8px">
-      要让自己的电脑连进来调试？那不是节点 —— 往下到
+      有机器要连进来用，但不该成为网络的成员？那不是节点 —— 往下到
       <a href="#clients" onclick="document.getElementById('clients').scrollIntoView({behavior:'smooth'});return false"
-         style="color:var(--acc)">「运维客户端」</a>签发凭证，填进 Knot App。
+         style="color:var(--acc)">「客户端」</a>签发凭证，填进 Knot App。
     </div>
     <div class="hint" style="margin:0 0 6px">在新机器上执行：</div>
     <div class="mono" id="jCmd" style="background:#000;padding:10px;border-radius:6px;font-size:12px;white-space:pre-wrap;word-break:break-all"></div>
@@ -109,7 +109,7 @@ td.dirty input{border-color:#3b82f6}
 </section>
 
 <section>
-  <h2>运维客户端</h2>
+  <h2>客户端</h2>
   <div class="row" style="margin-bottom:12px">
     <div><label>有效期（天）</label><input id="cDays" type="number" value="30" min="0" style="width:110px"></div>
     <button onclick="issueClient()">签发客户端凭证</button>
@@ -128,8 +128,9 @@ td.dirty input{border-color:#3b82f6}
     </div>
   </div>
   <div id="clients"></div>
-  <div class="hint">客户端只出不进：<b>不占网内地址</b>，不进任何节点的 hosts 和路由表，别的节点也拨不到它。
-    它拿到的权限是「让某个节点替它去连某个地址」，所以等于那个节点能访问的一切 —— 笔记本不用了就在这里吊销，
+  <div class="hint">客户端<b>连进网络但不加入</b>：不占网内地址，不进任何节点的 hosts 和路由表，别的节点也拨不到它。
+    自己的电脑连上来调线上库是一种用法，某台服务器只要访问网络里一个端口、却不该被拨到，也是一种。
+    它拿到的权限是「让某个节点替它去连某个地址」，所以等于那个节点能访问的一切 —— 不用了就在这里吊销，
     在线的会话会在中继下次轮询（10 秒内）被断开。</div>
 </section>
 

@@ -17,8 +17,8 @@ const (
 	RoleClient = "client"
 )
 
-// Node is one machine in the mesh -- or, when Role is RoleClient, one operator
-// workstation that only dials INTO it.
+// Node is one machine in the mesh -- or, when Role is RoleClient, one machine
+// that only dials INTO it and never becomes part of it.
 type Node struct {
 	ID   string `json:"id"`   // stable, generated at join
 	Name string `json:"name"` // human name, also the MagicDNS-ish label
@@ -76,7 +76,7 @@ type Node struct {
 	Created  time.Time `json:"created"`
 }
 
-// IsClient reports whether this record is an operator client rather than a
+// IsClient reports whether this record is an client rather than a
 // mesh member.
 func (n *Node) IsClient() bool { return n.Role == RoleClient }
 
@@ -132,7 +132,7 @@ type State struct {
 	Routes []Route      `json:"routes"`
 	Tokens []*JoinToken `json:"tokens"`
 
-	// ClientUUID is the ONE Reality identity every operator client presents.
+	// ClientUUID is the ONE Reality identity every client presents.
 	//
 	// Shared on purpose. It is a door, not a key: the relays' generated config
 	// lets this user reach exactly one destination -- the relay's own knot
@@ -271,7 +271,7 @@ func (st *State) MeshNodes() []*Node {
 	return out
 }
 
-// Clients returns the operator clients, expired ones included -- the panel has
+// Clients returns the clients, expired ones included -- the panel has
 // to show those, and only the code that hands out access filters them.
 func (st *State) Clients() []*Node {
 	var out []*Node

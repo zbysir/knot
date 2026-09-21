@@ -135,7 +135,7 @@ func muxConfig() *yamux.Config {
 type Server struct {
 	Reg *Registry
 	// SelfID is this relay's node ID. A stream addressed to it is one we dial
-	// ourselves instead of forwarding -- that is how an operator client reaches
+	// ourselves instead of forwarding -- that is how an client reaches
 	// anything this machine can reach, such as a database on a private address
 	// that is not a mesh member at all.
 	SelfID string
@@ -314,7 +314,7 @@ type Client struct {
 	// for one reached over loopback -- a client dials the port its own sing-box
 	// listens on, and that either answers or is not up yet.
 	Backoff time.Duration
-	// NoInbound refuses streams the relay pushes down, for an operator client
+	// NoInbound refuses streams the relay pushes down, for an client
 	// that must not be reachable.
 	//
 	// Belt to the relay's braces: a relay does not register clients and so has

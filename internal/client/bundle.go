@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// Bundle is what the head hands an operator client: the credential material for
+// Bundle is what the head hands an client: the credential material for
 // the relays it may dial, and the list of machines a forward can point at.
 //
 // It comes from /api/client, an endpoint that exists for exactly this. An

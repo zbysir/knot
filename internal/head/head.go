@@ -120,7 +120,7 @@ type joinResp struct {
 	// Role is what the TOKEN decided this enrolment is, not what the caller
 	// asked for -- the caller does not get a say. Returned so the client can
 	// say "that is a node token" instead of silently coming up as something
-	// the operator did not intend.
+	// nobody intended.
 	Role    string    `json:"role,omitempty"`
 	Expires time.Time `json:"expires,omitempty"`
 }
@@ -209,7 +209,7 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, out)
 }
 
-// joinClient enrols an operator workstation.
+// joinClient enrols a client.
 //
 // Deliberately spare: no VIP, no Reality material, no UUID. A client is not in
 // the address space and has no identity of its own on the wire -- it presents
@@ -316,7 +316,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 // ---- client bundle -------------------------------------------------------
 
-// clientRelay is one relay an operator client may dial.
+// clientRelay is one relay an client may dial.
 type clientRelay struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`
@@ -346,7 +346,7 @@ type clientBundle struct {
 	Nodes    []clientNode  `json:"nodes"`
 }
 
-// handleClientConfig serves the operator client its bundle.
+// handleClientConfig serves the client its bundle.
 //
 // A dedicated endpoint rather than letting clients read /api/config: that
 // response is a node's sing-box config, and a client reading it would be
@@ -430,7 +430,7 @@ type relayPlan struct {
 	// Hashes rather than the keys themselves so a readable relay state file
 	// does not hand over every node's credential.
 	PeerKeys map[string]string `json:"peer_keys,omitempty"`
-	// ClientKeys is the same thing for operator clients, and the reason this
+	// ClientKeys is the same thing for clients, and the reason this
 	// whole design works: it travels in the PLAN, which relayd swaps in place,
 	// not in the sing-box config, which needs a restart. Issuing or revoking a
 	// laptop is a diff here and costs the mesh nothing.

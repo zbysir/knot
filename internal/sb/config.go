@@ -15,7 +15,7 @@ import (
 	"github.com/zbysir/knot/internal/model"
 )
 
-// ClientDoorUser is the name of the one Reality user every operator client
+// ClientDoorUser is the name of the one Reality user every client
 // presents. The name matters: the relay's route rules match on it (sing-box's
 // `auth_user`), which is what confines that credential to knot's own port.
 const ClientDoorUser = "knot-client"
@@ -120,7 +120,7 @@ func realityInbound(st *model.State, n *model.Node) (map[string]any, error) {
 			"flow": "xtls-rprx-vision",
 		})
 	}
-	// One extra user for every operator client there will ever be.
+	// One extra user for every client there will ever be.
 	//
 	// Clients are NOT listed individually here, and that is the whole design:
 	// this list lives in the config file, so an entry per client would restart

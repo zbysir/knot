@@ -300,11 +300,16 @@ config needs the head.
 Since only relays are reachable by every node, **the head belongs on a relay** —
 its reachability requirement is identical, so co-locating costs nothing.
 
-## The operator client (Mac app)
+## The client (Mac app)
 
-To debug against a production database you do not want your laptop to become a
-member of the network. You want **a couple of local ports wired to a couple of
-remote ones** -- `ssh -L`, with Reality as the tunnel.
+Sometimes a machine needs to use the network and has **no business being part of
+it**. All it wants is a couple of local ports wired to a couple of addresses
+inside -- `ssh -L`, with Reality as the tunnel.
+
+Reaching a production database from a laptop is one case. A server that needs
+one port out of the network and should not be dialable by anything in it is
+another, and just as ordinary. What the machine is for does not matter; what
+matters is that it connects in without joining.
 
 That is `knot connect`, a third role that splits apart three properties usually
 bundled together:
@@ -412,6 +417,21 @@ forwards its own launch arguments, so
 `open -a Knot --args --data ~/.knot-staging --ui 127.0.0.1:8766` gives you a
 second profile.
 
+### As a client on a server
+
+The same thing runs on Linux. A machine that needs one port out of the network
+and should not be dialable by anything in it is a legitimate case, not a
+fallback:
+
+```bash
+curl -fsSL https://github.com/zbysir/knot/releases/latest/download/knot_linux_amd64 -o /usr/local/bin/knot
+knot connect --no-open          # there is no browser to open, and there should not be
+```
+
+The panel only ever listens on loopback, so reach it over ssh when you need it:
+`ssh -N -L 8765:127.0.0.1:8765 <host>`. Forwards live in `~/.knot/state.json`
+and come back with the process, so it hands to systemd as it is.
+
 > **Upgrade the head before the relays.** A relay still on an older binary does
 > not know about `ClientKeys` and will refuse a client at the handshake.
 >
@@ -422,8 +442,8 @@ second profile.
 
 ### Use
 
-Issue a credential in the head panel under 运维客户端, paste the address and
-token into the app, then add forwards. A forward is **a local port, the machine
+Issue a credential in the head panel under 客户端 (Clients), paste the address
+and token into the app, then add forwards. A forward is **a local port, the machine
 that dials, and the address it dials** -- and that machine can be any node,
 relay or leaf:
 

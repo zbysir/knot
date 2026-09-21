@@ -153,7 +153,7 @@ tr:last-child td{border-bottom:0;padding-bottom:0}
       <div><label>head 地址</label>
         <input id="sHead" placeholder="https://head.example.com" autofocus></div>
       <div><label>接入令牌</label>
-        <input id="sToken" placeholder="在 head 面板「运维客户端」里签发"></div>
+        <input id="sToken" placeholder="在 head 面板「客户端」里签发"></div>
       <div><label>本机名称</label>
         <input id="sName" placeholder="留空 = 用这台电脑的名字"></div>
     </div>
@@ -163,7 +163,7 @@ tr:last-child td{border-bottom:0;padding-bottom:0}
     <div class="err" id="sErr"></div>
     <button id="sBtn" class="primary" onclick="join()" style="width:100%">接入</button>
     <div class="hint">
-      只读客户端：本机不占用网络地址，别的节点访问不到这里。<br>
+      这台机器不会成为网络的节点：不占网内地址，别的节点也拨不到这里。<br>
       接入和注销都不会惊动网络里的其它机器。
     </div>
   </section>

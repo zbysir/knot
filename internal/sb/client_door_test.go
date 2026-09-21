@@ -8,7 +8,7 @@ import (
 	"github.com/zbysir/knot/internal/model"
 )
 
-// meshWithClient is a relay, a leaf, and an operator client -- the client
+// meshWithClient is a relay, a leaf, and an client -- the client
 // having no VIP, no uuid and no Reality material, as the head issues it.
 func meshWithClient() (*model.State, *model.Node) {
 	st, relay := relayState()
