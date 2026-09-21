@@ -275,7 +275,7 @@ func TestPlanNamesReachTheLogs(t *testing.T) {
 		Uplinks: []string{"10.88.0.1:9997"},
 		Peers:   []PlanPeer{{NodeID: "a1b2c3d4e5f60718", VIP: "10.88.0.2"}},
 		Names: map[string]string{
-			"a1b2c3d4e5f60718": "leaf-a", // by node ID, as a relay sees it
+			"a1b2c3d4e5f60718": "leaf-a",  // by node ID, as a relay sees it
 			"10.88.0.1:9997":   "relay-a", // by address, as a leaf sees it
 		},
 	}
