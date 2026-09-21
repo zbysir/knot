@@ -19,6 +19,18 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # Before the slower checks: it is the cheapest one and the easiest to let
+      # slip, since nothing else here notices. `gofmt -l` prints the offenders
+      # and exits 0 either way, so the emptiness of its output is the test.
+      - name: gofmt
+        run: |
+          bad=$(gofmt -l .)
+          if [ -n "$bad" ]; then
+            echo "::error::not gofmt'd:"
+            echo "$bad"
+            exit 1
+          fi
+
       - run: go build ./...
       - run: go vet ./...
       # -race matters here: the panel's session map is shared across request
