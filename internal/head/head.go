@@ -445,7 +445,7 @@ type relayPlan struct {
 	// uplink only by the address it dialled. The two key kinds cannot collide --
 	// an address always contains a colon, an ID never does.
 	//
-	// Without this the log says "relay: node bcd537f766865c69 online", and
+	// Without this the log says "relay: node a1b2c3d4e5f60718 online", and
 	// nobody can tell which machine that is.
 	Names map[string]string `json:"names,omitempty"`
 }
