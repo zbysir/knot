@@ -30,18 +30,29 @@ let panelURL: URL = {
     return URL(string: "http://127.0.0.1:8765")!
 }()
 
-final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate {
     private var window: NSWindow!
     private var web: WKWebView!
     private var helper: Process?
     private var helperLog = ""
     private var attempts = 0
     private var quitting = false
+    private var statusItem: NSStatusItem?
+    private var statusToggle: NSMenuItem!
+
+    // Off by default: the app is meant to be invisible when its window is
+    // closed, and an icon that appears in the menu bar without being asked for
+    // is the opposite of that. Also settable from a terminal, for anyone
+    // setting up a machine:
+    //
+    //     defaults write dev.bysir.knot.client ShowStatusItem -bool true
+    private static let statusItemKey = "ShowStatusItem"
 
     // MARK: - lifecycle
 
     func applicationDidFinishLaunching(_ note: Notification) {
         buildMenu()
+        applyStatusItemSetting()
         buildWindow()
         startHelper()
         load()
@@ -54,8 +65,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
     // Closing the window must not drop the tunnels: an operator in the middle
     // of a database session should not lose it to a stray cmd-W. The app keeps
-    // running and the Dock icon brings the window back; cmd-Q is how you leave.
+    // running with no window at all; cmd-Q is how you leave.
     func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { false }
+
+    // A window-less Knot steps out of the way completely: no Dock icon, no
+    // cmd-tab entry, no menu bar. macOS has no setting for keeping one and
+    // dropping another -- .regular is all three, .accessory is none of them --
+    // so the policy follows the window.
+    //
+    // The way back in is opening Knot again (Launchpad, Spotlight, `open -a
+    // Knot`): that reaches the process already running rather than starting a
+    // second one, and arrives here as a reopen. Anyone who would rather have
+    // something to click turns on the menu bar icon, which stays put either
+    // way -- a status item is not part of the activation policy.
+    //
+    // Async because the window is still on screen while windowWillClose runs,
+    // and an app that leaves the Dock with a window still up gets a confused
+    // half second of menu bar.
+    func windowWillClose(_ note: Notification) {
+        guard !quitting else { return }
+        DispatchQueue.main.async {
+            NSApp.setActivationPolicy(.accessory)
+            NSApp.deactivate()
+        }
+    }
 
     func applicationShouldHandleReopen(_ app: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag { showWindow() }
@@ -66,6 +99,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     // Belt and braces after the crash above: a window that cannot be reopened
     // leaves an operator with a running app, live tunnels, and no way in.
     @objc private func showWindow() {
+        // Back into the Dock first. An .accessory app cannot take focus the
+        // normal way, so ordering the window front before the policy change
+        // leaves it sitting behind whatever the user was looking at.
+        NSApp.setActivationPolicy(.regular)
         if window == nil || web == nil {
             buildWindow()
             load()
@@ -73,6 +110,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    // MARK: - the menu bar icon
+
+    // A status item survives the activation policy: it is there whether the
+    // app is .regular or .accessory, which is exactly what makes it a way back
+    // to a window that has been closed. Off by default, on for anyone who
+    // wants the app to stay reachable with one click and to be able to see at
+    // a glance that the forwards are still up.
+    private func applyStatusItemSetting() {
+        let on = UserDefaults.standard.bool(forKey: Self.statusItemKey)
+        statusToggle?.state = on ? .on : .off
+        if on {
+            guard statusItem == nil else { return }
+            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+            // Template image so it follows the menu bar through light, dark and
+            // the tinted wallpapers that come with it. The nice symbol is SF
+            // Symbols 3 (macOS 12); the fallback keeps macOS 11 from getting a
+            // blank button.
+            let img = NSImage(systemSymbolName: "point.3.connected.trianglepath.dotted",
+                              accessibilityDescription: "Knot")
+                ?? NSImage(systemSymbolName: "link", accessibilityDescription: "Knot")
+            img?.isTemplate = true
+            item.button?.image = img
+            item.button?.toolTip = "Knot"
+
+            let m = NSMenu()
+            m.addItem(withTitle: "显示 Knot 窗口", action: #selector(showWindow), keyEquivalent: "")
+            m.addItem(.separator())
+            m.addItem(withTitle: "退出 Knot", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
+            // The status menu is built here rather than reusing the app menu:
+            // its items must reach this object even when the app is .accessory
+            // and nothing of ours is key, so the target is explicit.
+            for i in m.items where i.action != nil {
+                if i.action == #selector(NSApplication.terminate(_:)) { i.target = NSApp } else { i.target = self }
+            }
+            item.menu = m
+            statusItem = item
+        } else if let item = statusItem {
+            NSStatusBar.system.removeStatusItem(item)
+            statusItem = nil
+        }
+    }
+
+    @objc private func toggleStatusItem() {
+        let d = UserDefaults.standard
+        d.set(!d.bool(forKey: Self.statusItemKey), forKey: Self.statusItemKey)
+        applyStatusItemSetting()
     }
 
     // MARK: - the helper
@@ -180,6 +265,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         // there; the next applicationShouldHandleReopen sends a message to
         // freed memory. The window's lifetime is ours, not the close button's.
         window.isReleasedWhenClosed = false
+        window.delegate = self
         window.contentView = web
         window.minSize = NSSize(width: 560, height: 420)
         // The panel is dark. Matching the window means no white flash while the
@@ -273,6 +359,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "打开数据目录", action: #selector(openDataDir), keyEquivalent: "")
         appMenu.addItem(.separator())
+        // A checkmark rather than a preferences window: one setting does not
+        // need a window, and this is where people look for it.
+        statusToggle = NSMenuItem(title: "在菜单栏显示图标", action: #selector(toggleStatusItem), keyEquivalent: "")
+        statusToggle.state = UserDefaults.standard.bool(forKey: Self.statusItemKey) ? .on : .off
+        appMenu.addItem(statusToggle)
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "隐藏 Knot", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "退出 Knot", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -305,8 +397,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         win.addItem(withTitle: "显示 Knot 窗口", action: #selector(showWindow), keyEquivalent: "0")
         win.addItem(.separator())
         // Closing the window leaves the app running on purpose -- the tunnels
-        // outlive it. cmd-W is what people reach for, so it should do the same
-        // thing the red button does rather than be missing.
+        // outlive it, out of sight. cmd-W is what people reach for, so it
+        // should do the same thing the red button does rather than be missing.
         win.addItem(withTitle: "关闭窗口", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         win.addItem(withTitle: "最小化", action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m")
         win.addItem(withTitle: "缩放", action: #selector(NSWindow.zoom(_:)), keyEquivalent: "")

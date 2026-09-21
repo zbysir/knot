@@ -357,8 +357,15 @@ cp -R dist/macos/build/Knot.app /Applications/
 想连 sing-box 一起打进去（目标机器不装 brew）：`./dist/macos/build-app.sh --with-singbox`
 —— 注意 sing-box 有 81 MB，App 会从 15 MB 涨到 ~96 MB，而且只有一个架构。
 
-装好在 Launchpad 里搜 **Knot**。这是一个普通的 Mac App：Dock 里有图标，
-⌘Q 退出。**关掉窗口不会断隧道** —— 转发继续跑，点 Dock 图标或 ⌘0 把窗口叫回来。
+装好在 Launchpad 里搜 **Knot**。⌘Q 是退出。**关掉窗口不会断隧道** ——
+转发照常跑，只是 App 连同 Dock 图标和 ⌘Tab 里的那一项一起收起来，
+像没在运行一样。再打开一次 Knot（Launchpad、Spotlight、`open -a Knot`）
+就是把窗口叫回来，不会起第二个进程。
+
+想要一个随时能点的入口，**Knot 菜单 → 在菜单栏显示图标**：状态栏图标不受
+上面那套显隐影响，窗口关了它还在，点一下就能把窗口叫回来，也能顺手退出。
+默认关着 —— 没打招呼就往菜单栏塞东西，和"关窗即隐身"是反着来的。
+命令行等价写法：`defaults write dev.bysir.knot.client ShowStatusItem -bool true`。
 
 bundle 里是两个可执行文件：`Knot` 是 AppKit 外壳（窗口 + 菜单），
 `knot-helper` 是它拉起来的 knot 本体。外壳退出时会结束 helper；

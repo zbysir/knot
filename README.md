@@ -401,9 +401,17 @@ Nothing built locally is quarantined, so that `xattr` line is not needed. Add
 `--with-singbox` to copy the sing-box binary into the bundle -- note it is 81 MB
 and single-architecture, taking the app from 15 MB to about 96.
 
-It is an ordinary Mac app: dock icon, cmd-Q to quit. **Closing the window does
-not drop the tunnels** -- the forwards keep running and the dock icon (or cmd-0)
-brings the window back.
+cmd-Q quits. **Closing the window does not drop the tunnels** -- the forwards
+keep running, but the app puts itself away: no dock icon and no cmd-tab entry,
+as if nothing were running. Opening Knot again (Launchpad, Spotlight, `open -a
+Knot`) brings the window back rather than starting a second copy.
+
+For something clickable instead, turn on **Knot > 在菜单栏显示图标**. A status
+item is not part of that appearing and disappearing: it stays in the menu bar
+with the window closed, and brings the window back in one click. Off by default
+-- putting something in the menu bar unasked is the opposite of getting out of
+the way. From a terminal: `defaults write dev.bysir.knot.client ShowStatusItem
+-bool true`.
 
 The bundle holds two executables: `Knot`, the AppKit shell that owns the window
 and the menu bar, and `knot-helper`, the knot binary it runs as a child. The
