@@ -368,7 +368,7 @@ bundle 里是两个可执行文件：`Knot` 是 AppKit 外壳（窗口 + 菜单�
 不想用 App 的话，同一个二进制在终端里跑是一样的：
 
 ```bash
-knot connect [--ui 127.0.0.1:8765] [--data ~/.knot] [--singbox PATH] [--no-open]
+knot connect [--ui 127.0.0.1:8765] [--data ~/.knot] [--singbox PATH] [--open]
 ```
 
 App 也会把启动参数透传给 helper，可以开一个配置独立的实例：
@@ -384,7 +384,7 @@ open -a Knot --args --data ~/.knot-staging --ui 127.0.0.1:8766
 
 ```bash
 curl -fsSL https://github.com/zbysir/knot/releases/latest/download/knot_linux_amd64 -o /usr/local/bin/knot
-knot connect --no-open          # 没有浏览器可开，也不该开
+knot connect                    # 默认不弹浏览器，只把地址打出来
 ```
 
 面板只监听回环，所以要看的话走 SSH 隧道：`ssh -N -L 8765:127.0.0.1:8765 <host>`。
@@ -403,7 +403,7 @@ docker run -d --name knot-client --restart=always \
   -e KNOT_NAME="$(hostname)" \
   -e KNOT_DATA=/var/lib/knot \
   -v knot-client:/var/lib/knot \
-  bysir/knot:sha-xxxxxxx connect --no-open
+  bysir/knot:sha-xxxxxxx connect
 ```
 
 `KNOT_HEAD` + `KNOT_TOKEN` 是**给没人开面板的场合准备的**：第一次启动自己接入，

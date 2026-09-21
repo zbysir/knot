@@ -95,7 +95,12 @@ type Agent struct {
 	Enrol   Enrol  // optional: join from configuration rather than from the panel
 	SingBox string // optional path override; otherwise discovered
 	UIAddr  string // where the local panel listens
-	OpenUI  bool   // open a browser once the panel is up
+	// OpenUI opens the panel in a browser once it is listening. Off by
+	// default: a command that hijacks your browser is a surprise, and the
+	// places this runs unattended -- a container, a server, the app's own
+	// window -- outnumber the one where it would have been convenient. The
+	// URL is printed either way.
+	OpenUI bool
 	// LogTo receives the same lines the panel shows. Defaults to stderr; a
 	// test or an embedder can silence it without losing the panel's log or the
 	// file in DataDir.
@@ -156,7 +161,6 @@ func New() *Agent {
 	return &Agent{
 		DataDir: defaultDataDir(),
 		UIAddr:  "127.0.0.1:8765",
-		OpenUI:  true,
 		log:     newRing(400),
 		ports:   map[string]int{},
 		status:  "未连接",

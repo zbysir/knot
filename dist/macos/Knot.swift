@@ -84,12 +84,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     private func startHelper() {
         let p = Process()
         p.executableURL = helperPath
-        // --no-open, because the window below IS the panel. Without it the
-        // helper would also throw the page at Safari.
-        // --exit-with-parent so a crash of this shell does not leave the
-        // helper holding the panel port and every forward with no window to
-        // close it from.
-        p.arguments = ["connect", "--no-open", "--exit-with-parent"] + extraArgs
+        // The helper never opens a browser unless asked, which is what this
+        // shell needs -- it has its own window. --exit-with-parent so a crash
+        // here does not leave the helper holding the panel port and every
+        // forward with no window to close it from.
+        p.arguments = ["connect", "--exit-with-parent"] + extraArgs
 
         let pipe = Pipe()
         p.standardError = pipe

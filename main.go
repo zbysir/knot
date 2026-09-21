@@ -90,7 +90,7 @@ const usage = `knot -- mesh networking with a Reality data plane
       --ui ADDR          panel listen address              (default 127.0.0.1:8765)
       --data DIR         state directory, overrides KNOT_DATA
       --singbox PATH     sing-box binary                   (default: found on PATH)
-      --no-open          do not open a browser at startup
+      --open             open the panel in a browser at startup
       --exit-with-parent quit when the process that launched this one does
 
   knot passwd <password> set the panel password (only while head is stopped;
@@ -206,8 +206,8 @@ func runConnect(args []string) error {
 			a.DataDir, err = next()
 		case "--singbox":
 			a.SingBox, err = next()
-		case "--no-open":
-			a.OpenUI = false
+		case "--open":
+			a.OpenUI = true
 		case "--exit-with-parent":
 			exitWithParent = true
 		case "-h", "--help":

@@ -412,7 +412,7 @@ crashed shell cannot leave an orphan holding the panel port and every forward
 with no window to close it from.
 
 The same binary runs from a terminal as
-`knot connect [--ui ADDR] [--data DIR] [--singbox PATH] [--no-open]`, and the app
+`knot connect [--ui ADDR] [--data DIR] [--singbox PATH] [--open]`, and the app
 forwards its own launch arguments, so
 `open -a Knot --args --data ~/.knot-staging --ui 127.0.0.1:8766` gives you a
 second profile.
@@ -425,7 +425,7 @@ fallback:
 
 ```bash
 curl -fsSL https://github.com/zbysir/knot/releases/latest/download/knot_linux_amd64 -o /usr/local/bin/knot
-knot connect --no-open          # there is no browser to open, and there should not be
+knot connect                    # prints the panel URL; it never opens a browser by itself
 ```
 
 The panel only ever listens on loopback, so reach it over ssh when you need it:
@@ -445,7 +445,7 @@ docker run -d --name knot-client --restart=always \
   -e KNOT_NAME="$(hostname)" \
   -e KNOT_DATA=/var/lib/knot \
   -v knot-client:/var/lib/knot \
-  bysir/knot:sha-xxxxxxx connect --no-open
+  bysir/knot:sha-xxxxxxx connect
 ```
 
 `KNOT_HEAD` and `KNOT_TOKEN` exist for the case where nobody is going to open
