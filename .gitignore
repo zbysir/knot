@@ -3,4 +3,4 @@ knot
 *.log
 state.json
 .DS_Store
-dist/macos/build/
+macos/build/

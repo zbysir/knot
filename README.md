@@ -393,8 +393,8 @@ xattr -dr com.apple.quarantine /Applications/Knot.app
 **Building it yourself** needs the Swift compiler (`xcode-select --install`):
 
 ```bash
-./dist/macos/build-app.sh
-cp -R dist/macos/build/Knot.app /Applications/
+./macos/build-app.sh
+cp -R macos/build/Knot.app /Applications/
 ```
 
 Nothing built locally is quarantined, so that `xattr` line is not needed. Add

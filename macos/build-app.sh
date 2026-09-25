@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # Build Knot.app -- a native macOS app around the read-only client.
 #
-#   ./dist/macos/build-app.sh                 # app only, sing-box from PATH at runtime
-#   ./dist/macos/build-app.sh --with-singbox  # copy the sing-box binary into the bundle
+#   ./macos/build-app.sh                 # app only, sing-box from PATH at runtime
+#   ./macos/build-app.sh --with-singbox  # copy the sing-box binary into the bundle
 #
 # Two executables end up in the bundle: the AppKit shell (Knot) and the knot
 # binary it runs as a child (knot-helper). The shell owns the window and the
 # child's lifetime; the child does all the actual work.
 #
-# The result is at dist/macos/build/Knot.app. Drag it to /Applications.
+# The result is at macos/build/Knot.app. Drag it to /Applications.
 set -euo pipefail
 
-cd "$(dirname "$0")/../.."
-OUT="dist/macos/build"
+cd "$(dirname "$0")/.."
+OUT="macos/build"
 APP="$OUT/Knot.app"
 VERSION="${VERSION:-0.1.0}"
 WITH_SINGBOX=0
@@ -36,14 +36,14 @@ rm -f "$OUT/knot-arm64" "$OUT/knot-amd64"
 echo "==> 编译界面 (arm64 + amd64)"
 for arch in arm64 x86_64; do
   swiftc -O -target "${arch}-apple-macos11.0" -sdk "$SDK" \
-    -o "$OUT/Knot-$arch" dist/macos/Knot.swift
+    -o "$OUT/Knot-$arch" macos/Knot.swift
 done
 lipo -create -output "$APP/Contents/MacOS/Knot" "$OUT/Knot-arm64" "$OUT/Knot-x86_64"
 rm -f "$OUT/Knot-arm64" "$OUT/Knot-x86_64"
 chmod +x "$APP/Contents/MacOS/Knot" "$APP/Contents/MacOS/knot-helper"
 
 echo "==> 生成图标"
-python3 dist/macos/icon.py "$APP/Contents/Resources/knot.icns" >/dev/null
+python3 macos/icon.py "$APP/Contents/Resources/knot.icns" >/dev/null
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

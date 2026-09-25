@@ -50,13 +50,13 @@ jobs:
       - name: Build Knot.app
         env:
           VERSION: ${{ steps.v.outputs.version }}
-        run: ./dist/macos/build-app.sh
+        run: ./macos/build-app.sh
 
       # ditto, not zip: it is what Apple's own tooling uses for bundles, and it
       # keeps the symlinks and metadata a .app needs to still be a .app on the
       # other side.
       - name: Package Knot.app
-        run: ditto -c -k --keepParent dist/macos/build/Knot.app out/Knot.app.zip
+        run: ditto -c -k --keepParent macos/build/Knot.app out/Knot.app.zip
 
       # --- optional: Developer ID signing and notarisation ----------------
       #
@@ -97,7 +97,7 @@ jobs:
           security unlock-keychain -p actions build.keychain
           security import /tmp/cert.p12 -k build.keychain -P "$CERT_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k actions build.keychain
-          APP=dist/macos/build/Knot.app
+          APP=macos/build/Knot.app
           # Inside out: nested code first, the bundle last.
           for f in "$APP"/Contents/MacOS/*; do
             codesign --force --options runtime --timestamp --sign "$IDENTITY" "$f"

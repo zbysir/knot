@@ -349,12 +349,12 @@ xattr -dr com.apple.quarantine /Applications/Knot.app
 **自己构建**（需要 Xcode 命令行工具，`xcode-select --install`）：
 
 ```bash
-./dist/macos/build-app.sh        # 产出 dist/macos/build/Knot.app
-cp -R dist/macos/build/Knot.app /Applications/
+./macos/build-app.sh        # 产出 macos/build/Knot.app
+cp -R macos/build/Knot.app /Applications/
 ```
 
 本地构建出来的没有隔离标记，不需要上面那条 `xattr`。
-想连 sing-box 一起打进去（目标机器不装 brew）：`./dist/macos/build-app.sh --with-singbox`
+想连 sing-box 一起打进去（目标机器不装 brew）：`./macos/build-app.sh --with-singbox`
 —— 注意 sing-box 有 81 MB，App 会从 15 MB 涨到 ~96 MB，而且只有一个架构。
 
 装好在 Launchpad 里搜 **Knot**。⌘Q 是退出。**关掉窗口不会断隧道** ——
